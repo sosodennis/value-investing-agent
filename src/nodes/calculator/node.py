@@ -10,7 +10,7 @@ This node orchestrates financial calculations:
 import math
 from src.state import AgentState
 from src.models.valuation import ValuationMetrics
-from src.nodes.calculator.tools import get_market_data, calculate_metrics, calculate_dcf
+from src.nodes.calculator.tools import get_market_data, get_normalized_income_data, calculate_metrics, calculate_dcf
 
 
 def calculator_node(state: AgentState) -> dict:
@@ -43,6 +43,38 @@ def calculator_node(state: AgentState) -> dict:
         return {"error": "market_data_fetch_failed"}
     
     print(f"📈 [Calculator] 現價: ${market_data['price']:.2f}")
+    
+    # 2.5. [New] 獲取標準化財務數據 (EPS w/o NRI)
+    nri_data = get_normalized_income_data(state["ticker"])
+    
+    # 決定估值使用的 "E" (Earnings)
+    # 如果有標準化數據，我們優先使用它來計算 P/E 和 FCF 起點
+    earnings_base = None
+    is_normalized = False
+    eps_normalized = None
+    
+    if nri_data:
+        earnings_base = nri_data['normalized_income']
+        is_normalized = nri_data['use_normalized']
+        
+        # 檢查是否存在重大差異 (例如 >20%)
+        raw_income = nri_data['raw_net_income']
+        if raw_income != 0:
+            diff_pct = abs(earnings_base - raw_income) / abs(raw_income)
+            if diff_pct > 0.2:
+                print(f"🚨 [Insight] 注意：標準化淨利與財報淨利差異巨大 ({diff_pct:.1%})，可能存在重大一次性項目！")
+        
+        # 計算標準化 EPS
+        shares = nri_data.get('shares_outstanding') or market_data.get('shares_outstanding', 0)
+        if shares and shares > 0:
+            eps_normalized = earnings_base / shares
+    else:
+        # Fallback 到 Node A 提取的數據
+        earnings_base = financial_obj.net_income * 1_000_000  # 轉絕對值
+        is_normalized = False
+    
+    if earnings_base:
+        print(f"📊 [Metrics] 使用的淨利基準: ${earnings_base/1_000_000:.2f}M (Normalized: {is_normalized})")
     
     # 3. 執行計算
     try:
@@ -129,26 +161,62 @@ def calculator_node(state: AgentState) -> dict:
         
         estimated_discount_rate = final_discount_rate
         
-        # --- 執行 DCF ---
-        # 準備數據
-        ocf = financial_obj.operating_cash_flow
-        capex = abs(financial_obj.capital_expenditures)  # 確保是絕對值
-        fcf = ocf - capex
+        # --- [Critical] FCF 數據標準化 (Normalization) ---
+        # 強制執行「絕對數值標準」：所有計算邏輯只處理原始數值 (Raw Numbers)
+        fcf_absolute = 0.0  # 這是我們唯一傳給 calculate_dcf 的變量（必須是絕對值）
         
-        print(f"💰 [Calculator] FCF 計算: {ocf} - {capex} = {fcf} (Millions)")
+        # 1. 嘗試使用 TTM FCF (yfinance info 通常返回絕對值)
+        ttm_fcf = market_data.get("fcf_ttm")
         
-        # 獲取流通股數
-        shares_outstanding = market_data.get('shares_outstanding', 0)
+        if ttm_fcf and ttm_fcf > 0:
+            # yfinance 返回的是絕對值 (Bytes)，直接使用
+            fcf_absolute = float(ttm_fcf)
+            print(f"✅ [Data Source] 使用實時 TTM FCF (Absolute): ${fcf_absolute:,.0f}")
+        else:
+            # 2. 回退使用財報數據 (SEC 提取的是 Millions)
+            # 必須 * 1,000,000 轉為絕對值
+            ocf = financial_obj.operating_cash_flow
+            capex = abs(financial_obj.capital_expenditures)
+            fcf_millions = ocf - capex
+            fcf_absolute = fcf_millions * 1_000_000
+            print(f"⚠️ [Data Source] 使用財報 FCF (Converted to Absolute): ${fcf_absolute:,.0f}")
         
-        if shares_outstanding > 0 and fcf > 0:
-            # 調用工具，傳入動態增長率和動態 WACC
+        # --- [New] 增長率校準機制 ---
+        # 如果使用 TTM 數據，且 TTM FCF > FY FCF (說明今年已經長了很多)，
+        # 我們可以稍微保守一點設定未來的 Growth Rate，防止雙重計算增長
+        adjusted_growth_rate = estimated_growth_rate
+        
+        if ttm_fcf and ttm_fcf > 0:
+            # 計算 FY FCF 作為對比（轉為絕對值）
+            ocf_fy = financial_obj.operating_cash_flow
+            capex_fy = abs(financial_obj.capital_expenditures)
+            fcf_fy_millions = ocf_fy - capex_fy
+            fcf_fy_absolute = fcf_fy_millions * 1_000_000
+            
+            if fcf_fy_absolute > 0:
+                # 計算 TTM vs FY 的增長率
+                ttm_growth = (ttm_fcf - fcf_fy_absolute) / fcf_fy_absolute
+                
+                # 如果 TTM 已經比 FY 高很多 (>20%)，說明過去一年已經有顯著增長
+                # 我們應該稍微降低未來的增長率預期，避免雙重計算
+                if ttm_growth > 0.20:
+                    # 保守調整：將未來增長率降低 20-30%
+                    adjustment_factor = 0.75  # 降低 25%
+                    adjusted_growth_rate = estimated_growth_rate * adjustment_factor
+                    print(f"📊 [Growth Calibration] TTM FCF 已比 FY 高 {ttm_growth:.1%}，調整未來增長率: {estimated_growth_rate:.1%} → {adjusted_growth_rate:.1%} (避免雙重計算)")
+        
+        # --- 獲取流通股數 (確保是絕對值) ---
+        shares_outstanding = float(market_data.get('shares_outstanding', 0))
+        
+        if shares_outstanding > 0 and fcf_absolute > 0:
+            # 調用工具，傳入絕對值（已標準化）
             intrinsic_value = calculate_dcf(
-                free_cash_flow=fcf,
-                shares_outstanding=shares_outstanding,
-                growth_rate=estimated_growth_rate,  # <--- 注入動態增長率
+                free_cash_flow=fcf_absolute,  # 傳入絕對值
+                shares_outstanding=shares_outstanding,  # 傳入絕對值
+                growth_rate=adjusted_growth_rate,  # <--- 使用校準後的增長率
                 discount_rate=estimated_discount_rate,  # <--- 注入動態 WACC
                 terminal_growth=0.03,
-                projection_years=5
+                projection_years=10
             )
             
             current_price = market_data['price']
@@ -165,6 +233,11 @@ def calculator_node(state: AgentState) -> dict:
             metrics_dict['dcf_upside'] = 0.0
         
         # 5. 封裝為 Pydantic 對象
+        # 添加標準化利潤指標
+        metrics_dict['eps_ttm'] = eps_normalized if eps_normalized else None
+        metrics_dict['eps_normalized'] = eps_normalized if is_normalized else None
+        metrics_dict['is_normalized'] = is_normalized
+        
         metrics_obj = ValuationMetrics(**metrics_dict)
         
         print(f"🧮 [Calculator] 計算完成: P/E={metrics_obj.pe_ratio}, Margin={metrics_obj.net_profit_margin}%")

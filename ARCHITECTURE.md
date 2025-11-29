@@ -42,14 +42,21 @@
 2. **Node B: Calculator** ✅ (Sprint 3 + Sprint 5 + Sprint 6 已實現)
    * 職責：執行純 Python 數學運算 (估值比率、盈利能力指標、DCF 模型)。
    * **技術實現：**
-     * 使用 `yfinance` 獲取實時股價、市值、流通股數、PEG Ratio、Beta、無風險利率 (^TNX)、TTM P/E
+     * 使用 `yfinance` 獲取實時股價、市值、流通股數、PEG Ratio、Beta、無風險利率 (^TNX)、TTM P/E、TTM FCF
+     * **財務數據標準化：** 從 yfinance 財務報表提取 Normalized Income（排除非經常性項目），優先使用標準化淨利進行估值計算
      * **雙軌 P/E 驗證：**
        * FY P/E: 基於財報計算 (Market Cap / FY Net Income)
        * TTM P/E: 從 Yahoo Finance 獲取實時數據 (Trailing Twelve Months)
        * 趨勢洞察：對比兩者差異，判斷獲利趨勢（改善/穩定/衰退）
      * 計算 Net Profit Margin (淨利率) = Net Income / Revenue
      * **2-Stage DCF 模型（智能動態參數）：**
-       * 計算自由現金流 (FCF) = Operating Cash Flow - Capital Expenditures
+       * **FCF 數據源選擇（TTM vs FY）：**
+         * 優先使用 TTM FCF (從 yfinance 獲取實時數據，過去12個月滾動)
+         * 如果沒有 TTM 數據，回退使用財報 FY FCF
+         * 消除「舊財報 vs 新股價」的時間錯配問題
+       * **增長率校準機制：**
+         * 如果 TTM FCF > FY FCF (說明過去一年已有顯著增長)
+         * 自動降低未來增長率預期 (降低 25%)，避免雙重計算增長
        * **智能增長率推導：**
          * 策略 A: 透過 PEG Ratio 反推市場隱含增長率 (Growth = P/E / PEG / 100)
          * 策略 B: 基於 P/E 分層規則（P/E > 50 → 25%, P/E > 25 → 15%, 其他 → 10%）
@@ -66,7 +73,7 @@
        * 計算每股內在價值和上行/下行空間
      * 簡單估值狀態判斷（基於 P/E 區間）
    * **特點：** 不使用 LLM，確保計算準確性。所有計算均為純 Python 數學運算。智能適應成長股和價值股，同時具備市場情緒感知 (PEG Growth) 和風險感知 (CAPM WACC)。
-   * **數據輸出：** 返回 `ValuationMetrics` Pydantic 對象，包含 market_cap, current_price, net_profit_margin, pe_ratio, pe_ratio_ttm, pe_ratio_fy, pe_trend_insight, valuation_status, dcf_value, dcf_upside
+   * **數據輸出：** 返回 `ValuationMetrics` Pydantic 對象，包含 market_cap, current_price, net_profit_margin, pe_ratio, pe_ratio_ttm, pe_ratio_fy, pe_trend_insight, eps_ttm, eps_normalized, is_normalized, valuation_status, dcf_value, dcf_upside
 
 3. **Node C: Researcher** ✅ (Sprint 4 已實現)
    * 職責：結合外部新聞與內部財報，生成定性分析。
@@ -134,7 +141,7 @@ class AgentState(TypedDict):
 [Human Loop] → (修正) → [Data Miner]
 ```
 
-## 7. 模組化設計原則 (Modular Node Design)
+## 8. 模組化設計原則 (Modular Node Design)
 
 採用 **"High Cohesion, Low Coupling"** 的微服務式代碼組織風格，遵循 **Domain Model Pattern (領域模型模式)**：
 
@@ -182,19 +189,19 @@ Nodes (依賴 State 和 Models)
 * **易於擴展：** 新增模型只需在 `src/models/` 中添加，新增節點只需在 `src/nodes/` 中創建
 * **領域驅動：** 符合 DDD (Domain-Driven Design) 原則
 
-## 8. 錯誤處理策略
+## 9. 錯誤處理策略
 
 * 所有節點應捕獲異常並在 `AgentState.error` 中記錄錯誤信息
 * 嚴重錯誤（如 API 失敗）觸發 Human-in-the-Loop 中斷
 * 非致命錯誤（如數據缺失）記錄警告但繼續執行流程
 
-## 9. 數據持久化
+## 10. 數據持久化
 
 * SEC 財報原始文件緩存於 `data/sec_filings/` 目錄
 * 中間計算結果可選擇性持久化（未來擴展）
 * 最終報告以 Markdown 格式輸出
 
-## 10. 領域模型設計 (Domain Model Design)
+## 11. 領域模型設計 (Domain Model Design)
 
 系統採用 **Domain Model Pattern**，將數據定義與業務邏輯徹底分離：
 
@@ -208,7 +215,7 @@ Nodes (依賴 State 和 Models)
 
 * `src/models/valuation.py` - `ValuationMetrics` 模型
   * 定義估值指標數據結構
-  * 包含：market_cap, current_price, net_profit_margin, pe_ratio, pe_ratio_ttm, pe_ratio_fy, pe_trend_insight, valuation_status, dcf_value, dcf_upside
+  * 包含：market_cap, current_price, net_profit_margin, pe_ratio, pe_ratio_ttm, pe_ratio_fy, pe_trend_insight, eps_ttm, eps_normalized, is_normalized, valuation_status, dcf_value, dcf_upside
 
 * `src/models/analysis.py` - `QualitativeAnalysis` 模型
   * 定義定性分析數據結構
@@ -248,7 +255,7 @@ def calculator_node(state: AgentState) -> dict:
         income = financial_data.net_income
 ```
 
-## 11. 實現狀態 (Implementation Status)
+## 12. 實現狀態 (Implementation Status)
 
 ### 11.1 已完成節點
 
@@ -260,11 +267,14 @@ def calculator_node(state: AgentState) -> dict:
   * Gemini 結構化提取
   * 返回強類型 `FinancialStatements` 對象（包含現金流數據）
 
-* ✅ **Node B: Calculator** (Sprint 3 + Sprint 5 + Sprint 6 + Sprint 6.5 + Sprint 7)
-  * 使用 `yfinance` 獲取實時市場數據（股價、市值、流通股數、PEG Ratio、Beta、無風險利率 ^TNX、TTM P/E）
+* ✅ **Node B: Calculator** (Sprint 3 + Sprint 5 + Sprint 6 + Sprint 6.5 + Sprint 7 + Sprint 7.5 + Sprint 8)
+  * 使用 `yfinance` 獲取實時市場數據（股價、市值、流通股數、PEG Ratio、Beta、無風險利率 ^TNX、TTM P/E、TTM FCF）
   * 純 Python 數學計算（P/E Ratio, Net Profit Margin）
+  * **財務數據標準化：** 從 yfinance 財務報表提取 Normalized Income（排除非經常性項目），優先使用標準化淨利進行估值計算
   * **雙軌 P/E 驗證：** 對比 FY P/E 和 TTM P/E，判斷獲利趨勢（改善/穩定/衰退）
-  * **2-Stage DCF 模型（智能動態參數）：**
+  * **2-Stage DCF 模型（智能動態參數 + TTM 實時化）：**
+    * **FCF 數據源選擇：** 優先使用 TTM FCF (實時)，回退到 FY FCF (財報)，消除時間錯配
+    * **增長率校準：** 如果 TTM FCF > FY FCF，自動降低未來增長率預期，避免雙重計算
     * **智能增長率：** 透過 PEG Ratio 反推市場隱含增長率，或基於 P/E 分層規則
     * **動態 WACC (Hybrid 模型)：** 
       * CAPM 計算：Rf + Beta × ERP
@@ -273,7 +283,7 @@ def calculator_node(state: AgentState) -> dict:
     * 預測未來現金流、計算終值、折現回現值
   * 計算每股內在價值和上行/下行空間
   * 估值狀態判斷（基於 P/E 區間）
-  * 返回強類型 `ValuationMetrics` 對象（包含 DCF 結果和趨勢洞察）
+  * 返回強類型 `ValuationMetrics` 對象（包含 DCF 結果、趨勢洞察和標準化利潤指標）
 
 * ✅ **Node C: Researcher** (Sprint 4)
   * 使用 `Tavily API` 搜索市場新聞與分析師觀點
@@ -291,7 +301,7 @@ def calculator_node(state: AgentState) -> dict:
 
 * ⏳ **Human Node** - 完整的人機交互流程（目前為基礎實現）
 
-## 12. 擴展性考慮
+## 13. 擴展性考慮
 
 * 支持多股票並行分析（未來 Phase）
 * 支持自定義分析模板（報告格式可配置）
@@ -304,4 +314,6 @@ def calculator_node(state: AgentState) -> dict:
 * **智能增長率：** 透過 PEG Ratio 反推市場隱含增長率，或基於 P/E 分層規則，使 DCF 模型能夠智能適應成長股和價值股
 * **動態 WACC (Hybrid 模型)：** 使用 CAPM 模型實時計算折現率，從 `^TNX` 獲取無風險利率，結合 Beta 和市場風險溢價。引入 Hurdle Rate 保底機制（RoundUp(Rf) + 5.5%），確保低 Beta 公司不會因折現率過低而產生估值泡沫，使估值更符合實戰派標準
 * **雙軌 P/E 驗證：** 對比財報 P/E 和實時 TTM P/E，通過差異分析判斷公司獲利趨勢，解決「舊財報 vs 新股價」的時間錯配問題
+* **財務數據標準化：** 從 yfinance 提取 Normalized Income（排除非經常性項目），優先使用標準化淨利進行估值，避免一次性損益導致 P/E 和 DCF 失真
+* **FCF 實時化：** 優先使用 TTM FCF (過去12個月滾動) 作為 DCF 起點，消除「舊財報 vs 新股價」的時間錯配，使估值與彭博終端 (Bloomberg Terminal) 同級別的數據新鮮度
 

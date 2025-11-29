@@ -5,11 +5,13 @@ This module contains financial calculation utilities:
 1. Market data fetching (yfinance)
 2. Valuation ratio calculations (P/E, Margins, etc.)
 3. Financial data validation
+4. Normalized income extraction (NRI handling)
 
 All calculations are pure Python - no LLM involvement to ensure accuracy.
 """
 
 import yfinance as yf
+import pandas as pd
 
 
 def get_market_data(ticker: str):
@@ -80,18 +82,96 @@ def get_market_data(ticker: str):
             print(f"⚠️ [Tool] 無法獲取 ^TNX，使用默認值: {e}")
             risk_free_rate = 0.042
         
+        # 6. [New] 獲取 TTM FCF 相關數據
+        # yfinance 通常在 info 中提供 'freeCashflow' (TTM)
+        # 如果沒有，我們嘗試獲取 'operatingCashflow' (TTM) 和 'capitalExpenditures' (TTM)
+        fcf_ttm = info.get("freeCashflow")
+        ocf_ttm = info.get("operatingCashflow")
+        
+        # 注意：yfinance 的 CapEx 通常在 info 裡沒有直接的 TTM 字段
+        # 有時需要容錯。如果 fcf_ttm 存在，直接用它最準確。
+        
         return {
             "price": current_price,
             "market_cap": float(market_cap),
             "shares_outstanding": float(shares_outstanding),
             "peg_ratio": peg_ratio if peg_ratio else None,
             "beta": beta if beta else None,
-            "trailing_pe": trailing_pe if trailing_pe else None,  # <--- 新增
+            "trailing_pe": trailing_pe if trailing_pe else None,
             "forward_pe": forward_pe if forward_pe else None,
-            "risk_free_rate": risk_free_rate
+            "risk_free_rate": risk_free_rate,
+            # 新增 TTM 數據
+            "fcf_ttm": float(fcf_ttm) if fcf_ttm else None,  # 單位：絕對值 (Bytes)
+            "ocf_ttm": float(ocf_ttm) if ocf_ttm else None  # 單位：絕對值 (Bytes)
         }
     except Exception as e:
         print(f"❌ [Calculator Tool] yfinance error: {e}")
+        return None
+
+
+def get_normalized_income_data(ticker: str) -> dict:
+    """
+    從 yfinance 的財務報表中提取標準化淨利 (Normalized Income)。
+    如果沒有，回退使用普通 Net Income。
+    
+    Args:
+        ticker: Stock ticker symbol
+        
+    Returns:
+        dict: Contains 'normalized_income', 'raw_net_income', 'shares_outstanding', 'use_normalized', or None if failed
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        
+        # 獲取年度損益表 (Financials)
+        fin_df = stock.financials
+        
+        if fin_df.empty:
+            print(f"⚠️ [Tool] 無法獲取財務報表數據")
+            return None
+        
+        # yfinance 的 index 可能是 'Normalized Income' 或 'Net Income Continuous Operations'
+        # 我們嘗試獲取最新一年的數據 (列是日期，取第一列)
+        latest_date = fin_df.columns[0]
+        
+        # 1. 嘗試獲取標準化淨利
+        normalized_income = None
+        use_normalized = False
+        
+        if 'Normalized Income' in fin_df.index:
+            normalized_income = fin_df.loc['Normalized Income', latest_date]
+            use_normalized = True
+            print(f"✅ [Tool] 找到標準化淨利 (Normalized Income): {normalized_income/1_000_000:.2f}M")
+        else:
+            # 2. 回退到普通淨利
+            if 'Net Income' in fin_df.index:
+                normalized_income = fin_df.loc['Net Income', latest_date]
+                use_normalized = False
+                print(f"⚠️ [Tool] 未找到標準化數據，使用普通淨利: {normalized_income/1_000_000:.2f}M")
+            else:
+                print(f"❌ [Tool] 無法找到淨利數據")
+                return None
+        
+        # 獲取普通淨利作對比
+        raw_net_income = None
+        if 'Net Income' in fin_df.index:
+            raw_net_income = fin_df.loc['Net Income', latest_date]
+        
+        # 獲取流通股數 (用於計算 EPS)
+        info = stock.info
+        shares = info.get('sharesOutstanding')
+        
+        return {
+            "normalized_income": float(normalized_income),
+            "raw_net_income": float(raw_net_income) if raw_net_income is not None else float(normalized_income),
+            "shares_outstanding": float(shares) if shares else None,
+            "use_normalized": use_normalized
+        }
+        
+    except Exception as e:
+        print(f"❌ [Tool Error] 無法獲取詳細財務數據: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -178,18 +258,20 @@ def calculate_dcf(
     projection_years: int = 5
 ) -> float:
     """
-    執行 2-Stage DCF 計算。
+    Core DCF Math Function.
+    
+    Input constraints: All currency/share values MUST be absolute numbers.
     
     Args:
-        free_cash_flow (million): 初始 FCF (OCF - CapEx)
-        shares_outstanding (absolute number): 流通股數
-        growth_rate: 前5年的預期增長率 (默認 10%，可動態調整)
+        free_cash_flow: 初始 FCF (OCF - CapEx) - 必須是絕對值 (e.g., 17,000,000,000)
+        shares_outstanding: 流通股數 - 必須是絕對值 (e.g., 900,000,000)
+        growth_rate: 前N年的預期增長率 (默認 10%，可動態調整)
         discount_rate: 折現率 WACC (默認 10%)
         terminal_growth: 永續增長率 (默認 3%)
         projection_years: 預測年數 (默認 5年)
     
     Returns:
-        float: Intrinsic Value per Share
+        float: Intrinsic Value per Share (絕對值)
     """
     if shares_outstanding == 0:
         return 0.0
@@ -215,11 +297,11 @@ def calculate_dcf(
     pv_terminal = terminal_value / ((1 + discount_rate) ** projection_years)
     
     # 4. 總公司價值 (Enterprise Value 簡化版)
-    total_value_millions = pv_fcfs + pv_terminal
+    # [FIX] 這已經是絕對值了，不需要轉換
+    total_enterprise_value = pv_fcfs + pv_terminal
     
-    # 5. 計算每股價值
-    # 注意單位換算：total_value 是 million，shares 是 absolute
-    # 所以 total_value 要 * 1,000,000
-    intrinsic_value = (total_value_millions * 1_000_000) / shares_outstanding
+    # 5. 每股價值 (絕對值 / 絕對值 = 股價)
+    # [FIX] 移除了 * 1,000,000，因為輸入已經是絕對值
+    intrinsic_value = total_enterprise_value / shares_outstanding
     
     return intrinsic_value
