@@ -30,6 +30,7 @@ def writer_node(state: AgentState) -> dict:
     fin = state.get('financial_data')
     val = state.get('valuation_metrics')
     analysis = state.get('qualitative_analysis')
+    tasks = state.get('investigation_tasks', [])
     
     # 構建 Prompt Context
     # 這裡將 Pydantic 對象轉為字典或字符串
@@ -37,6 +38,22 @@ def writer_node(state: AgentState) -> dict:
 1. Financials: {fin.model_dump() if fin else 'N/A'}
 2. Valuation: {val.model_dump() if val else 'N/A'}
 3. Qualitative Analysis: {analysis.model_dump() if analysis else 'N/A'}
+4. Investigation Tasks: {tasks if tasks else 'None'}
+"""
+    
+    # 檢查是否有數據異常需要解釋
+    has_data_discrepancy = len(tasks) > 0 or (val and val.is_normalized and val.eps_normalized)
+    discrepancy_context = ""
+    if has_data_discrepancy:
+        if val and val.is_normalized and val.eps_normalized:
+            discrepancy_context = f"""
+- 標準化 EPS: {val.eps_normalized:.2f}
+- 使用標準化數據的原因: 排除非經常性項目以反映核心價值
+"""
+        if tasks:
+            discrepancy_context += f"""
+- 調查任務: {', '.join(tasks)}
+- Researcher 已針對這些異常進行定向搜索，請引用其分析結果
 """
     
     try:
@@ -70,7 +87,11 @@ def writer_node(state: AgentState) -> dict:
 
 - 評論 P/E {val.pe_ratio if val else 'N/A'} 倍數的合理性。
 
-## 3. Strategic Analysis (戰略分析)
+## 3. Data Discrepancy Analysis (數據差異分析)
+
+{f"請詳細解釋以下數據異常：{discrepancy_context}引用 Researcher 找到的原因（例如：一次性費用、非經常性項目、網絡攻擊成本等）。如果 Researcher 的分析中提到了具體事件，請詳細說明。" if has_data_discrepancy else "Financials align with GAAP standards. No significant discrepancies detected."}
+
+## 4. Strategic Analysis (戰略分析)
 
 - 市場情緒: {analysis.market_sentiment if analysis else 'N/A'}
 
@@ -78,7 +99,7 @@ def writer_node(state: AgentState) -> dict:
 
 - 關鍵風險: (列點說明)
 
-## 4. Conclusion (結論)
+## 5. Conclusion (結論)
 
 - 總結性建議。
 

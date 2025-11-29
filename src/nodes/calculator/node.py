@@ -47,6 +47,9 @@ def calculator_node(state: AgentState) -> dict:
     # 2.5. [New] 獲取標準化財務數據 (EPS w/o NRI)
     nri_data = get_normalized_income_data(state["ticker"])
     
+    # 初始化調查任務列表
+    investigation_tasks = []
+    
     # 決定估值使用的 "E" (Earnings)
     # 如果有標準化數據，我們優先使用它來計算 P/E 和 FCF 起點
     earnings_base = None
@@ -62,7 +65,12 @@ def calculator_node(state: AgentState) -> dict:
         if raw_income != 0:
             diff_pct = abs(earnings_base - raw_income) / abs(raw_income)
             if diff_pct > 0.2:
-                print(f"🚨 [Insight] 注意：標準化淨利與財報淨利差異巨大 ({diff_pct:.1%})，可能存在重大一次性項目！")
+                warning_msg = f"標準化淨利與財報淨利差異巨大 ({diff_pct:.1%})，可能存在重大一次性項目！"
+                print(f"🚨 [Insight] {warning_msg}")
+                
+                # [Fix] 將此洞察轉化為具體的搜索任務
+                ticker = state['ticker']
+                investigation_tasks.append(f"{ticker} net income vs normalized income discrepancy")
         
         # 計算標準化 EPS
         shares = nri_data.get('shares_outstanding') or market_data.get('shares_outstanding', 0)
@@ -215,7 +223,7 @@ def calculator_node(state: AgentState) -> dict:
                 shares_outstanding=shares_outstanding,  # 傳入絕對值
                 growth_rate=adjusted_growth_rate,  # <--- 使用校準後的增長率
                 discount_rate=estimated_discount_rate,  # <--- 注入動態 WACC
-                terminal_growth=0.03,
+                terminal_growth=0.04,
                 projection_years=10
             )
             
@@ -242,8 +250,13 @@ def calculator_node(state: AgentState) -> dict:
         
         print(f"🧮 [Calculator] 計算完成: P/E={metrics_obj.pe_ratio}, Margin={metrics_obj.net_profit_margin}%")
         
+        # 如果有調查任務，輸出提示
+        if investigation_tasks:
+            print(f"📋 [Investigation] 生成 {len(investigation_tasks)} 個調查任務，將傳遞給 Researcher")
+        
         return {
             "valuation_metrics": metrics_obj,
+            "investigation_tasks": investigation_tasks,  # [Fix] 將任務傳遞給下游
             "error": None
         }
     except Exception as e:

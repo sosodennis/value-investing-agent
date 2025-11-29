@@ -27,10 +27,25 @@ def researcher_node(state: AgentState) -> dict:
         dict: Updated state with qualitative_analysis (QualitativeAnalysis) or error
     """
     ticker = state['ticker']
-    print(f"\n🔍 [Node C: Researcher] 正在分析 {ticker} 的基本面與情緒...")
+    tasks = state.get("investigation_tasks", [])
     
-    # 1. 獲取外部信息 (News)
-    news_context = search_market_news(ticker)
+    print(f"\n🔍 [Node C: Researcher] 正在分析 {ticker} 的基本面與情緒...")
+    print(f"📋 [Investigation] 待調查的異常點: {len(tasks)} 個")
+    
+    # 1. 構建搜索查詢
+    # 基礎查詢
+    queries = [f"{ticker} stock analyst rating and risks 2025"]
+    
+    # [Fix] 加入來自 Calculator 的定向查詢
+    if tasks:
+        print(f"🕵️‍♀️ [Deep Dive] 檢測到異常，追加定向搜索: {tasks}")
+        queries.extend(tasks)
+    
+    # 2. 執行搜索 (循環調用 search_market_news)
+    news_context = ""
+    for q in queries:
+        result = search_market_news(q)  # 現在接受任意查詢字符串
+        news_context += f"\n=== Search: {q} ===\n{result}\n"
     
     # 2. 獲取內部信息 (SEC Text)
     # 我們利用 State 中已經保存的 10-K 文本 (由 Node A 下載)
@@ -50,7 +65,17 @@ def researcher_node(state: AgentState) -> dict:
         )
         
         structured_llm = llm.with_structured_output(QualitativeAnalysis)
-        
+        special_instruction_block = ""
+    
+        if tasks:
+            task_list_str = "\n".join([f"- {task}" for task in tasks])
+            special_instruction_block = f"""
+    【特別指令 (來自量化分析組)】
+    上游計算節點發現了以下數據異常，請務必根據搜索結果給出解釋：
+    {task_list_str}
+
+    請重點調查上述問題，請在報告中專門開闢章節說明。
+    """
         prompt = f"""
 你是一位華爾街資深權益分析師。請根據提供的數據，對 {ticker} 進行深度定性分析。
 
@@ -65,6 +90,8 @@ def researcher_node(state: AgentState) -> dict:
 3. SEC 10-K 財報片段 (MD&A):
 
 {sec_text}
+
+{special_instruction_block}
 
 【任務】
 

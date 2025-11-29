@@ -75,27 +75,32 @@
    * **特點：** 不使用 LLM，確保計算準確性。所有計算均為純 Python 數學運算。智能適應成長股和價值股，同時具備市場情緒感知 (PEG Growth) 和風險感知 (CAPM WACC)。
    * **數據輸出：** 返回 `ValuationMetrics` Pydantic 對象，包含 market_cap, current_price, net_profit_margin, pe_ratio, pe_ratio_ttm, pe_ratio_fy, pe_trend_insight, eps_ttm, eps_normalized, is_normalized, valuation_status, dcf_value, dcf_upside
 
-3. **Node C: Researcher** ✅ (Sprint 4 已實現)
+3. **Node C: Researcher** ✅ (Sprint 4 + Sprint 9 已實現)
    * 職責：結合外部新聞與內部財報，生成定性分析。
    * **技術實現：**
      * 使用 `Tavily API` 搜索最新市場新聞與分析師觀點
+     * **跨節點洞察傳遞：** 接收來自 Calculator 的 `investigation_tasks`，優先進行定向搜索
      * 分析 SEC 10-K 財報中的 MD&A 章節
      * 使用 Gemini 綜合新聞、財報和財務指標，生成結構化分析
-   * **技術優勢：** 結合外部市場情緒與內部管理層展望，提供全面的定性評估。
+     * **重點解釋數據異常：** 如果存在標準化淨利與 GAAP 淨利的差異，詳細說明原因
+   * **技術優勢：** 結合外部市場情緒與內部管理層展望，提供全面的定性評估。打破信息孤島，實現跨節點協作。
    * **數據輸出：** 返回 `QualitativeAnalysis` Pydantic 對象，包含 market_sentiment, key_growth_drivers, top_risks, management_tone, summary
 
-4. **Node D: Writer** ✅ (Sprint 4 已實現)
+4. **Node D: Writer** ✅ (Sprint 4 + Sprint 9 已實現)
    * 職責：匯總所有結構化與非結構化數據，生成專業投資研報。
    * **技術實現：**
      * 聚合財務數據、估值指標、定性分析
      * 使用 Gemini 生成結構化的 Markdown 投資報告
-     * 報告包含：執行摘要、財務亮點、戰略分析、結論
+     * 報告包含：執行摘要、財務亮點、**數據差異分析**（如有異常）、戰略分析、結論
+     * **數據差異分析：** 如果存在標準化淨利與 GAAP 淨利的差異，強制包含解釋章節，引用 Researcher 找到的原因
    * **技術優勢：** 使用 Gemini 的大上下文窗口，可以一次性整合所有分析結果生成完整報告。
    * **數據輸出：** 返回專業的繁體中文投資研究報告（Markdown 格式）
 
 ## 4. 全局狀態定義 (Agent State)
 
-所有節點共享以下 `TypedDict` 結構，使用 **Pydantic 強類型對象** 確保數據契約：
+所有節點共享以下 `TypedDict` 結構，使用 **Pydantic 強類型對象** 確保數據契約。
+
+**跨節點洞察傳遞機制：** 系統支持通過 `investigation_tasks` 字段實現上游節點（如 Calculator）發現的異常自動傳遞給下游節點（如 Researcher）進行定向研究，打破節點間的信息孤島。
 
 ```python
 from src.models.financial import FinancialStatements
@@ -115,6 +120,12 @@ class AgentState(TypedDict):
     
     # 其他節點
     final_report: Optional[str]         # 最終報告 (Markdown 格式)
+    
+    # --- [New] 跨節點洞察傳遞 ---
+    investigation_tasks: Optional[List[str]]  # 調查任務隊列，用於存儲上游節點發現的異常
+    
+    # --- 跨節點洞察傳遞 ---
+    investigation_tasks: Optional[List[str]]  # 調查任務隊列，用於存儲上游節點發現的異常，指導 Researcher 進行定向搜索
     
     # --- 控制信號 ---
     # 簡單字符串，與業務數據分離
@@ -141,7 +152,7 @@ class AgentState(TypedDict):
 [Human Loop] → (修正) → [Data Miner]
 ```
 
-## 8. 模組化設計原則 (Modular Node Design)
+## 9. 模組化設計原則 (Modular Node Design)
 
 採用 **"High Cohesion, Low Coupling"** 的微服務式代碼組織風格，遵循 **Domain Model Pattern (領域模型模式)**：
 
@@ -189,19 +200,19 @@ Nodes (依賴 State 和 Models)
 * **易於擴展：** 新增模型只需在 `src/models/` 中添加，新增節點只需在 `src/nodes/` 中創建
 * **領域驅動：** 符合 DDD (Domain-Driven Design) 原則
 
-## 9. 錯誤處理策略
+## 10. 錯誤處理策略
 
 * 所有節點應捕獲異常並在 `AgentState.error` 中記錄錯誤信息
 * 嚴重錯誤（如 API 失敗）觸發 Human-in-the-Loop 中斷
 * 非致命錯誤（如數據缺失）記錄警告但繼續執行流程
 
-## 10. 數據持久化
+## 11. 數據持久化
 
 * SEC 財報原始文件緩存於 `data/sec_filings/` 目錄
 * 中間計算結果可選擇性持久化（未來擴展）
 * 最終報告以 Markdown 格式輸出
 
-## 11. 領域模型設計 (Domain Model Design)
+## 12. 領域模型設計 (Domain Model Design)
 
 系統採用 **Domain Model Pattern**，將數據定義與業務邏輯徹底分離：
 
@@ -255,7 +266,7 @@ def calculator_node(state: AgentState) -> dict:
         income = financial_data.net_income
 ```
 
-## 12. 實現狀態 (Implementation Status)
+## 13. 實現狀態 (Implementation Status)
 
 ### 11.1 已完成節點
 
@@ -285,23 +296,26 @@ def calculator_node(state: AgentState) -> dict:
   * 估值狀態判斷（基於 P/E 區間）
   * 返回強類型 `ValuationMetrics` 對象（包含 DCF 結果、趨勢洞察和標準化利潤指標）
 
-* ✅ **Node C: Researcher** (Sprint 4)
+* ✅ **Node C: Researcher** (Sprint 4 + Sprint 9)
   * 使用 `Tavily API` 搜索市場新聞與分析師觀點
+  * **跨節點洞察傳遞：** 優先搜索 `investigation_tasks` 中的定向查詢
   * 分析 SEC 10-K 財報 MD&A 章節
   * Gemini 綜合分析生成結構化定性評估
+  * 針對上游節點發現的異常進行定向深度研究
   * 返回強類型 `QualitativeAnalysis` 對象
 
-* ✅ **Node D: Writer** (Sprint 4)
+* ✅ **Node D: Writer** (Sprint 4 + Sprint 9)
   * 聚合所有分析結果（財務、估值、定性）
   * 使用 Gemini 生成專業投資研報
-  * 結構化 Markdown 格式（執行摘要、財務亮點、戰略分析、結論）
+  * 結構化 Markdown 格式（執行摘要、財務亮點、**數據差異分析**、戰略分析、結論）
+  * **強制異常解釋：** 如果存在數據異常，在報告中包含「數據差異分析」章節
   * 繁體中文輸出
 
 ### 11.2 待實現節點
 
 * ⏳ **Human Node** - 完整的人機交互流程（目前為基礎實現）
 
-## 13. 擴展性考慮
+## 14. 擴展性考慮
 
 * 支持多股票並行分析（未來 Phase）
 * 支持自定義分析模板（報告格式可配置）
@@ -316,4 +330,5 @@ def calculator_node(state: AgentState) -> dict:
 * **雙軌 P/E 驗證：** 對比財報 P/E 和實時 TTM P/E，通過差異分析判斷公司獲利趨勢，解決「舊財報 vs 新股價」的時間錯配問題
 * **財務數據標準化：** 從 yfinance 提取 Normalized Income（排除非經常性項目），優先使用標準化淨利進行估值，避免一次性損益導致 P/E 和 DCF 失真
 * **FCF 實時化：** 優先使用 TTM FCF (過去12個月滾動) 作為 DCF 起點，消除「舊財報 vs 新股價」的時間錯配，使估值與彭博終端 (Bloomberg Terminal) 同級別的數據新鮮度
+* **跨節點協作：** 實現調查任務隊列機制，當 Calculator 發現數據異常時，自動生成調查任務傳遞給 Researcher 進行定向搜索，打破信息孤島，實現「有靈魂」的 AI 分析師
 

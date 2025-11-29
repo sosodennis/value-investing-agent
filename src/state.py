@@ -7,7 +7,7 @@ across all nodes in the LangGraph workflow.
 
 from __future__ import annotations
 
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, List
 
 # 【Refactor】從底層 models 包導入
 from src.models.financial import FinancialStatements
@@ -40,6 +40,11 @@ class AgentState(TypedDict):
     # 其他節點暫時用簡單類型
     qualitative_analysis: Optional[QualitativeAnalysis]  # [Update] 使用強類型
     final_report: Optional[str]
+    
+    # --- [New] 調查任務隊列 ---
+    # 用於存儲上游節點發現的異常，指導 Researcher 進行定向搜索
+    # 例如: ["UNH non-recurring charges 2024 analysis", "UNH normalized income discrepancy"]
+    investigation_tasks: Optional[List[str]]
     
     # --- 控制信號 ---
     # 簡單字符串，與業務數據分離
