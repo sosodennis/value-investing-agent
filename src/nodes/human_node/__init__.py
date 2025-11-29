@@ -9,8 +9,7 @@ This module handles human intervention at critical decision points:
 Supports state updates through update_state mechanism.
 """
 
-# TODO: Implement human_node function in Phase 1
-# from .node import human_node
+from .node import request_human_help_node
 
-__all__ = []  # Will export human_node in Phase 1
+__all__ = ["request_human_help_node"]
 

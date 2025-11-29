@@ -9,8 +9,8 @@ This module is responsible for:
 Exception handling: If download fails, triggers error flag and routes to Human Loop.
 """
 
-# TODO: Implement data_miner_node function in Phase 1
-# from .node import data_miner_node
+# 导出节点函数（延迟导入以避免循环依赖）
+# graph.py 直接从 .node 导入，这里只用于文档
 
-__all__ = []  # Will export data_miner_node in Phase 1
+__all__ = ["data_miner_node"]
 

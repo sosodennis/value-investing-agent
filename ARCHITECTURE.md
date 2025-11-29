@@ -44,18 +44,35 @@
 
 ## 4. 全局狀態定義 (Agent State)
 
-所有節點共享以下 `TypedDict` 結構：
+所有節點共享以下 `TypedDict` 結構，使用 **Pydantic 強類型對象** 確保數據契約：
 
 ```python
+from src.models.financial import FinancialStatements
+from src.models.valuation import ValuationMetrics
+
 class AgentState(TypedDict):
     ticker: str                         # 目標股票代碼
+    
+    # --- 原始數據 ---
     sec_text_chunk: Optional[str]       # 財報原始文本 (支持人工注入)
-    financial_data: Optional[Dict]      # 提取後的財務數據 (JSON)
-    valuation_metrics: Optional[Dict]   # 計算後的估值指標
+    
+    # --- 結構化業務數據 (使用 Pydantic Object) ---
+    financial_data: Optional[FinancialStatements]      # 提取後的財務數據 (強類型)
+    valuation_metrics: Optional[ValuationMetrics]     # 計算後的估值指標 (強類型)
+    
+    # 其他節點暫時用簡單類型
     qualitative_analysis: Optional[str] # 定性分析文本
     final_report: Optional[str]         # 最終報告
+    
+    # --- 控制信號 ---
+    # 簡單字符串，與業務數據分離
     error: Optional[str]                # 錯誤控制標記
 ```
+
+**設計優勢：**
+* **類型安全：** 使用 Pydantic 模型確保數據結構正確性
+* **錯誤分離：** `error` 字段獨立運作，不污染業務數據對象
+* **IDE 支持：** 強類型提供完整的自動補全和類型檢查
 
 ## 5. 人機協作 (Human-in-the-Loop)
 
@@ -74,19 +91,51 @@ class AgentState(TypedDict):
 
 ## 7. 模組化設計原則 (Modular Node Design)
 
-採用 **"High Cohesion, Low Coupling"** 的微服務式代碼組織風格：
+採用 **"High Cohesion, Low Coupling"** 的微服務式代碼組織風格，遵循 **Domain Model Pattern (領域模型模式)**：
 
-* **狀態管理:** `src/state.py` 定義全局狀態結構
-* **圖編排:** `src/graph.py` 定義節點間的連接與路由邏輯
-* **節點實現:** `src/nodes/` 目錄下每個節點為獨立包（Package），包含：
-  * `node.py` - 節點主邏輯
-  * `tools.py` - 節點專用工具（私有工具，僅該節點使用）
-  * `__init__.py` - 暴露節點函數給圖編排層
-* **共享工具:** `src/tools/` 提供跨節點共享的通用工具（如 Logging、日期處理）
-* **設計優勢:** 
-  * 每個節點是自包含模組（Self-contained Module）
-  * 節點專用工具與節點邏輯緊密耦合，提高內聚性
-  * 便於未來擴展（如新增 TechnicalAnalysis Node）
+### 7.1 分層架構
+
+系統採用清晰的分層架構，實現單向依賴流動：
+
+```
+Models (獨立層，無依賴)
+  ↓
+State (依賴 Models)
+  ↓
+Nodes (依賴 State 和 Models)
+```
+
+### 7.2 目錄結構
+
+* **領域模型層 (Domain Models):** `src/models/` 
+  * 包含所有 Pydantic 數據模型（如 `FinancialStatements`, `ValuationMetrics`）
+  * **完全獨立**，不依賴任何業務邏輯
+  * 確保數據定義與業務邏輯分離，消除循環依賴
+
+* **狀態管理:** `src/state.py` 
+  * 定義全局狀態結構（`AgentState` TypedDict）
+  * 引用 Models 層的 Pydantic 對象
+
+* **圖編排:** `src/graph.py` 
+  * 定義節點間的連接與路由邏輯
+  * 實現條件路由和 Human-in-the-Loop 中斷
+
+* **節點實現:** `src/nodes/` 
+  * 每個節點為獨立包（Package），包含：
+    * `node.py` - 節點主邏輯
+    * `tools.py` - 節點專用工具（私有工具，僅該節點使用）
+    * `__init__.py` - 暴露節點函數給圖編排層
+
+* **共享工具:** `src/tools/` 
+  * 提供跨節點共享的通用工具（如 Logging、日期處理）
+
+### 7.3 設計優勢
+
+* **無循環依賴：** Models 層獨立，確保清晰的依賴關係
+* **高內聚低耦合：** 每個節點是自包含模組（Self-contained Module）
+* **類型安全：** 使用 Pydantic 確保數據契約
+* **易於擴展：** 新增模型只需在 `src/models/` 中添加，新增節點只需在 `src/nodes/` 中創建
+* **領域驅動：** 符合 DDD (Domain-Driven Design) 原則
 
 ## 8. 錯誤處理策略
 
@@ -100,9 +149,61 @@ class AgentState(TypedDict):
 * 中間計算結果可選擇性持久化（未來擴展）
 * 最終報告以 Markdown 格式輸出
 
-## 10. 擴展性考慮
+## 10. 領域模型設計 (Domain Model Design)
+
+系統採用 **Domain Model Pattern**，將數據定義與業務邏輯徹底分離：
+
+### 10.1 Models 層結構
+
+所有 Pydantic 數據模型位於 `src/models/` 目錄：
+
+* `src/models/financial.py` - `FinancialStatements` 模型
+  * 定義財務報表數據結構
+  * 包含：fiscal_year, total_revenue, net_income, source
+
+* `src/models/valuation.py` - `ValuationMetrics` 模型
+  * 定義估值指標數據結構
+  * 包含：pe_ratio, valuation_status
+
+### 10.2 設計原則
+
+* **單向依賴：** Models → State → Nodes，無循環依賴
+* **數據契約：** 使用 Pydantic 確保類型安全和數據驗證
+* **獨立性：** Models 層不依賴任何業務邏輯，可獨立測試和重用
+* **可擴展性：** 新增領域模型只需在 `src/models/` 中添加新文件
+
+### 10.3 使用示例
+
+```python
+# 在節點中使用強類型對象
+from src.models.financial import FinancialStatements
+from src.state import AgentState
+
+def data_miner_node(state: AgentState) -> dict:
+    # 返回強類型對象，而非字典
+    return {
+        "financial_data": FinancialStatements(
+            fiscal_year="2024",
+            total_revenue=10000.0,
+            net_income=2000.0,
+            source="Auto Download"
+        )
+    }
+
+# 在其他節點中直接訪問屬性（類型安全）
+def calculator_node(state: AgentState) -> dict:
+    financial_data = state.get("financial_data")
+    if financial_data:
+        # IDE 提供完整的自動補全
+        revenue = financial_data.total_revenue
+        income = financial_data.net_income
+```
+
+## 11. 擴展性考慮
 
 * 支持多股票並行分析（未來 Phase）
 * 支持自定義分析模板（報告格式可配置）
 * 支持多種估值模型（DCF, P/E, P/B 等）
+* 新增領域模型：在 `src/models/` 中添加新的 Pydantic 模型
+* 新增節點：在 `src/nodes/` 中創建新的節點包
 
