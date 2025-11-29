@@ -12,6 +12,7 @@ from typing import TypedDict, Optional
 # 【Refactor】從底層 models 包導入
 from src.models.financial import FinancialStatements
 from src.models.valuation import ValuationMetrics
+from src.models.analysis import QualitativeAnalysis
 
 
 class AgentState(TypedDict):
@@ -37,7 +38,7 @@ class AgentState(TypedDict):
     valuation_metrics: Optional[ValuationMetrics]
     
     # 其他節點暫時用簡單類型
-    qualitative_analysis: Optional[str]
+    qualitative_analysis: Optional[QualitativeAnalysis]  # [Update] 使用強類型
     final_report: Optional[str]
     
     # --- 控制信號 ---

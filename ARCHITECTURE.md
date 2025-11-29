@@ -48,13 +48,23 @@
    * **特點：** 不使用 LLM，確保計算準確性。所有計算均為純 Python 數學運算。
    * **數據輸出：** 返回 `ValuationMetrics` Pydantic 對象，包含 market_cap, current_price, net_profit_margin, pe_ratio, valuation_status
 
-3. **Node C: Researcher**
-   * 職責：使用 Deep Research 模式搜索市場情緒、競爭格局。
-   * **技術優勢：** 使用 Gemini 進行數據提取和深度定性分析。
+3. **Node C: Researcher** ✅ (Sprint 4 已實現)
+   * 職責：結合外部新聞與內部財報，生成定性分析。
+   * **技術實現：**
+     * 使用 `Tavily API` 搜索最新市場新聞與分析師觀點
+     * 分析 SEC 10-K 財報中的 MD&A 章節
+     * 使用 Gemini 綜合新聞、財報和財務指標，生成結構化分析
+   * **技術優勢：** 結合外部市場情緒與內部管理層展望，提供全面的定性評估。
+   * **數據輸出：** 返回 `QualitativeAnalysis` Pydantic 對象，包含 market_sentiment, key_growth_drivers, top_risks, management_tone, summary
 
-4. **Node D: Writer**
-   * 職責：匯總所有結構化與非結構化數據，生成 Markdown 報告。
+4. **Node D: Writer** ✅ (Sprint 4 已實現)
+   * 職責：匯總所有結構化與非結構化數據，生成專業投資研報。
+   * **技術實現：**
+     * 聚合財務數據、估值指標、定性分析
+     * 使用 Gemini 生成結構化的 Markdown 投資報告
+     * 報告包含：執行摘要、財務亮點、戰略分析、結論
    * **技術優勢：** 使用 Gemini 的大上下文窗口，可以一次性整合所有分析結果生成完整報告。
+   * **數據輸出：** 返回專業的繁體中文投資研究報告（Markdown 格式）
 
 ## 4. 全局狀態定義 (Agent State)
 
@@ -63,6 +73,7 @@
 ```python
 from src.models.financial import FinancialStatements
 from src.models.valuation import ValuationMetrics
+from src.models.analysis import QualitativeAnalysis
 
 class AgentState(TypedDict):
     ticker: str                         # 目標股票代碼
@@ -73,10 +84,10 @@ class AgentState(TypedDict):
     # --- 結構化業務數據 (使用 Pydantic Object) ---
     financial_data: Optional[FinancialStatements]      # 提取後的財務數據 (強類型)
     valuation_metrics: Optional[ValuationMetrics]     # 計算後的估值指標 (強類型)
+    qualitative_analysis: Optional[QualitativeAnalysis]  # 定性分析結果 (強類型)
     
-    # 其他節點暫時用簡單類型
-    qualitative_analysis: Optional[str] # 定性分析文本
-    final_report: Optional[str]         # 最終報告
+    # 其他節點
+    final_report: Optional[str]         # 最終報告 (Markdown 格式)
     
     # --- 控制信號 ---
     # 簡單字符串，與業務數據分離
@@ -179,6 +190,10 @@ Nodes (依賴 State 和 Models)
   * 定義估值指標數據結構
   * 包含：market_cap, current_price, net_profit_margin, pe_ratio, valuation_status
 
+* `src/models/analysis.py` - `QualitativeAnalysis` 模型
+  * 定義定性分析數據結構
+  * 包含：market_sentiment, key_growth_drivers, top_risks, management_tone, summary
+
 ### 10.2 設計原則
 
 * **單向依賴：** Models → State → Nodes，無循環依賴
@@ -230,11 +245,21 @@ def calculator_node(state: AgentState) -> dict:
   * 估值狀態判斷（基於 P/E 區間）
   * 返回強類型 `ValuationMetrics` 對象
 
+* ✅ **Node C: Researcher** (Sprint 4)
+  * 使用 `Tavily API` 搜索市場新聞與分析師觀點
+  * 分析 SEC 10-K 財報 MD&A 章節
+  * Gemini 綜合分析生成結構化定性評估
+  * 返回強類型 `QualitativeAnalysis` 對象
+
+* ✅ **Node D: Writer** (Sprint 4)
+  * 聚合所有分析結果（財務、估值、定性）
+  * 使用 Gemini 生成專業投資研報
+  * 結構化 Markdown 格式（執行摘要、財務亮點、戰略分析、結論）
+  * 繁體中文輸出
+
 ### 11.2 待實現節點
 
-* ⏳ **Node C: Researcher** - 深度市場研究（Tavily API + Gemini）
-* ⏳ **Node D: Writer** - 報告生成（Gemini）
-* ⏳ **Human Node** - 完整的人機交互流程
+* ⏳ **Human Node** - 完整的人機交互流程（目前為基礎實現）
 
 ## 12. 擴展性考慮
 
