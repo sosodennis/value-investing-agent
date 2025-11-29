@@ -25,28 +25,46 @@
 
 系統採用**混合循環圖 (Hybrid Cyclic Graph)** 設計：
 
-1. **Node A: Data Miner** ✅ (Sprint 2 已實現)
+1. **Node A: Data Miner** ✅ (Sprint 2 + Sprint 5 已實現)
    * 職責：從 SEC 下載財報，清洗為 Markdown，提取結構化數據。
    * **技術實現：**
      * 使用 `sec-edgar-downloader` 從 SEC EDGAR 下載最新 10-K 文件
      * **雙格式支持：** 自動識別 HTML (Primary Document) 和 TXT (Full Submission) 格式
      * 使用 `beautifulsoup4` 解析混合格式（BeautifulSoup 可處理包含 XML/SGML 標頭的內容）
      * 使用 `markdownify` 將內容轉換為 Markdown（自動忽略非 HTML 標籤如 SEC-HEADER）
-     * 智能定位財務報表章節（如 "Consolidated Statements of Operations"）
+     * **擴展搜索範圍：** 智能定位損益表和現金流量表（"Consolidated Statements of Operations" 和 "Consolidated Statements of Cash Flows"）
+     * 截取 80,000 字符確保覆蓋多個報表
      * 使用 Gemini 的 `with_structured_output()` 直接提取為 Pydantic 對象
    * **技術優勢：** 利用 Gemini 的長上下文窗口，可以將整個財務報表章節直接傳遞給 LLM，無需複雜的切片邏輯。
    * **異常處理：** 若下載失敗或提取失敗，觸發錯誤標記，路由至 Human Loop。
-   * **數據輸出：** 返回 `FinancialStatements` Pydantic 對象，包含 fiscal_year, total_revenue, net_income, source
+   * **數據輸出：** 返回 `FinancialStatements` Pydantic 對象，包含 fiscal_year, total_revenue, net_income, operating_cash_flow, capital_expenditures, source
 
-2. **Node B: Calculator** ✅ (Sprint 3 已實現)
-   * 職責：執行純 Python 數學運算 (估值比率、盈利能力指標)。
+2. **Node B: Calculator** ✅ (Sprint 3 + Sprint 5 + Sprint 6 已實現)
+   * 職責：執行純 Python 數學運算 (估值比率、盈利能力指標、DCF 模型)。
    * **技術實現：**
-     * 使用 `yfinance` 獲取實時股價和市值數據
-     * 計算 P/E Ratio (本益比) = Market Cap / Net Income
+     * 使用 `yfinance` 獲取實時股價、市值、流通股數、PEG Ratio、Beta、無風險利率 (^TNX)、TTM P/E
+     * **雙軌 P/E 驗證：**
+       * FY P/E: 基於財報計算 (Market Cap / FY Net Income)
+       * TTM P/E: 從 Yahoo Finance 獲取實時數據 (Trailing Twelve Months)
+       * 趨勢洞察：對比兩者差異，判斷獲利趨勢（改善/穩定/衰退）
      * 計算 Net Profit Margin (淨利率) = Net Income / Revenue
+     * **2-Stage DCF 模型（智能動態參數）：**
+       * 計算自由現金流 (FCF) = Operating Cash Flow - Capital Expenditures
+       * **智能增長率推導：**
+         * 策略 A: 透過 PEG Ratio 反推市場隱含增長率 (Growth = P/E / PEG / 100)
+         * 策略 B: 基於 P/E 分層規則（P/E > 50 → 25%, P/E > 25 → 15%, 其他 → 10%）
+       * **動態 WACC 計算（CAPM 模型）：**
+         * 無風險利率 (Rf): 從 `^TNX` (10年期國債收益率) 實時獲取
+         * 市場風險溢價 (ERP): 設為 5% (歷史平均水平)
+         * WACC = Rf + Beta × ERP
+         * 安全邊界檢查：6% < WACC < 15%
+       * 預測未來 5 年現金流（基於動態增長率）
+       * 計算終值 (Terminal Value)
+       * 折現回現值 (NPV，使用動態 WACC)
+       * 計算每股內在價值和上行/下行空間
      * 簡單估值狀態判斷（基於 P/E 區間）
-   * **特點：** 不使用 LLM，確保計算準確性。所有計算均為純 Python 數學運算。
-   * **數據輸出：** 返回 `ValuationMetrics` Pydantic 對象，包含 market_cap, current_price, net_profit_margin, pe_ratio, valuation_status
+   * **特點：** 不使用 LLM，確保計算準確性。所有計算均為純 Python 數學運算。智能適應成長股和價值股，同時具備市場情緒感知 (PEG Growth) 和風險感知 (CAPM WACC)。
+   * **數據輸出：** 返回 `ValuationMetrics` Pydantic 對象，包含 market_cap, current_price, net_profit_margin, pe_ratio, pe_ratio_ttm, pe_ratio_fy, pe_trend_insight, valuation_status, dcf_value, dcf_upside
 
 3. **Node C: Researcher** ✅ (Sprint 4 已實現)
    * 職責：結合外部新聞與內部財報，生成定性分析。
@@ -184,11 +202,11 @@ Nodes (依賴 State 和 Models)
 
 * `src/models/financial.py` - `FinancialStatements` 模型
   * 定義財務報表數據結構
-  * 包含：fiscal_year, total_revenue, net_income, source
+  * 包含：fiscal_year, total_revenue, net_income, operating_cash_flow, capital_expenditures, source
 
 * `src/models/valuation.py` - `ValuationMetrics` 模型
   * 定義估值指標數據結構
-  * 包含：market_cap, current_price, net_profit_margin, pe_ratio, valuation_status
+  * 包含：market_cap, current_price, net_profit_margin, pe_ratio, pe_ratio_ttm, pe_ratio_fy, pe_trend_insight, valuation_status, dcf_value, dcf_upside
 
 * `src/models/analysis.py` - `QualitativeAnalysis` 模型
   * 定義定性分析數據結構
@@ -232,18 +250,25 @@ def calculator_node(state: AgentState) -> dict:
 
 ### 11.1 已完成節點
 
-* ✅ **Node A: Data Miner** (Sprint 2)
+* ✅ **Node A: Data Miner** (Sprint 2 + Sprint 5)
   * 真實 SEC 10-K 下載功能
   * **雙格式支持：** 自動處理 HTML 和 TXT (Full Submission) 格式
   * HTML/Markdown 轉換（支持混合格式解析）
+  * **擴展數據提取：** 提取損益表和現金流量表（Revenue, Net Income, Operating Cash Flow, Capital Expenditures）
   * Gemini 結構化提取
-  * 返回強類型 `FinancialStatements` 對象
+  * 返回強類型 `FinancialStatements` 對象（包含現金流數據）
 
-* ✅ **Node B: Calculator** (Sprint 3)
-  * 使用 `yfinance` 獲取實時市場數據（股價、市值）
+* ✅ **Node B: Calculator** (Sprint 3 + Sprint 5 + Sprint 6 + Sprint 6.5)
+  * 使用 `yfinance` 獲取實時市場數據（股價、市值、流通股數、PEG Ratio、Beta、無風險利率 ^TNX、TTM P/E）
   * 純 Python 數學計算（P/E Ratio, Net Profit Margin）
+  * **雙軌 P/E 驗證：** 對比 FY P/E 和 TTM P/E，判斷獲利趨勢（改善/穩定/衰退）
+  * **2-Stage DCF 模型（智能動態參數）：**
+    * **智能增長率：** 透過 PEG Ratio 反推市場隱含增長率，或基於 P/E 分層規則
+    * **動態 WACC：** 使用 CAPM 模型 (Rf + Beta × ERP) 計算每家公司獨特的折現率
+    * 預測未來現金流、計算終值、折現回現值
+  * 計算每股內在價值和上行/下行空間
   * 估值狀態判斷（基於 P/E 區間）
-  * 返回強類型 `ValuationMetrics` 對象
+  * 返回強類型 `ValuationMetrics` 對象（包含 DCF 結果和趨勢洞察）
 
 * ✅ **Node C: Researcher** (Sprint 4)
   * 使用 `Tavily API` 搜索市場新聞與分析師觀點
@@ -265,9 +290,13 @@ def calculator_node(state: AgentState) -> dict:
 
 * 支持多股票並行分析（未來 Phase）
 * 支持自定義分析模板（報告格式可配置）
-* 支持多種估值模型（DCF, P/E, P/B 等）
+* 支持多種估值模型（DCF, P/E, P/B 等）- 已實現 P/E、Margins 和 2-Stage DCF
 * 新增領域模型：在 `src/models/` 中添加新的 Pydantic 模型
 * 新增節點：在 `src/nodes/` 中創建新的節點包
 * 優化數據提取：支持更多財務報表類型（10-Q, 8-K 等）
 * **文件格式兼容性：** 已支持 HTML 和 TXT (Full Submission) 格式，適應 `sec-edgar-downloader` 新版本行為
+* **DCF 模型：** 已實現 2-Stage DCF，支持預測未來現金流和計算內在價值，使 Agent 具備「預測未來」的能力
+* **智能增長率：** 透過 PEG Ratio 反推市場隱含增長率，或基於 P/E 分層規則，使 DCF 模型能夠智能適應成長股和價值股
+* **動態 WACC：** 使用 CAPM 模型實時計算折現率，從 `^TNX` 獲取無風險利率，結合 Beta 和市場風險溢價，使估值反映真實風險水平
+* **雙軌 P/E 驗證：** 對比財報 P/E 和實時 TTM P/E，通過差異分析判斷公司獲利趨勢，解決「舊財報 vs 新股價」的時間錯配問題
 

@@ -62,19 +62,29 @@ def data_miner_node(state: AgentState) -> dict:
         # 綁定 Pydantic (這就是 Data Class 的威力)
         structured_llm = llm.with_structured_output(FinancialStatements)
         
-        # 截取文本前 30000 字符（Gemini 可以处理更多，但为了稳定性）
-        text_snippet = raw_text[:30000] if len(raw_text) > 30000 else raw_text
+        # 截取文本前 80000 字符（Gemini 可以处理更多，确保覆盖多个报表）
+        text_snippet = raw_text[:80000] if len(raw_text) > 80000 else raw_text
         
         prompt = f"""
 你是一位專業的財務會計。請閱讀以下 SEC 10-K 財報片段，並提取關鍵財務數據。
 
 要求：
-1. 尋找「Consolidated Statements of Operations」或類似的損益表。
-2. 提取**最新一個財年** (Current Fiscal Year) 的數據。
-3. 金額單位通常為百萬 (Millions)，請直接提取表格中的數值（不需要乘 1000000）。
-4. 如果找不到某個字段，請盡力估算或填 0。
-5. fiscal_year 請提取財年結束日期（例如 "2023" 或 "2023-09-30"）。
-6. source 填寫 "Auto Download"。
+1. 提取最新財年的 Revenue 和 Net Income。
+
+2. 【重要】尋找「Consolidated Statements of Cash Flows」(現金流量表)。
+
+3. 提取「Net cash provided by operating activities」作為 operating_cash_flow。
+
+4. 提取「Payments for acquisition of property, plant and equipment」或類似的「Capital expenditures」作為 capital_expenditures。
+   注意：如果 CapEx 在表中是負數 (如 -100)，請提取其絕對值 (100)。
+
+5. 單位通常為百萬 (Millions)，請直接提取數值（不需要乘 1000000）。
+
+6. 如果找不到某個字段，請盡力估算或填 0。
+
+7. fiscal_year 請提取財年結束日期（例如 "2023" 或 "2023-09-30"）。
+
+8. source 填寫 "Auto Download"。
 
 財報文本片段:
 

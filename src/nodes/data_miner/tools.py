@@ -102,11 +102,15 @@ def fetch_10k_text(ticker: str, user_agent: str) -> str:
         
         # 定位關鍵詞 (大小寫不敏感)
         # 10-K Item 8 通常包含 Financial Statements
+        # [Update] 擴充關鍵詞列表，加入現金流量表
         targets = [
             "Consolidated Statements of Operations",
             "CONSOLIDATED STATEMENTS OF OPERATIONS",
             "Consolidated Statements of Income",
-            "CONSOLIDATED STATEMENTS OF INCOME"
+            "CONSOLIDATED STATEMENTS OF INCOME",
+            # 新增：
+            "Consolidated Statements of Cash Flows",
+            "CONSOLIDATED STATEMENTS OF CASH FLOWS"
         ]
         
         start_idx = -1
@@ -137,13 +141,13 @@ def fetch_10k_text(ticker: str, user_agent: str) -> str:
                 break
         
         if md_start_idx != -1:
-            # 截取關鍵詞後面的 50,000 個字符 (足夠包含損益表、資產負債表)
-            # Gemini Context 很長，我們可以大方一點
-            return full_markdown[md_start_idx : md_start_idx + 50000]
+            # [Update] 增加截取長度到 80,000 字符，確保覆蓋多個報表（損益表、現金流量表）
+            # 為了確保 Gemini 能同時看到損益表和現金流量表，我們截取更大的範圍
+            return full_markdown[md_start_idx : md_start_idx + 80000]
         else:
-            # 實在找不到，返回中間到結尾的 50,000 字符
+            # 實在找不到，返回中間到結尾的 80,000 字符
             mid = len(full_markdown) // 2
-            return full_markdown[mid : mid + 50000]
+            return full_markdown[mid : mid + 80000]
             
     except Exception as e:
         print(f"❌ [Tool Error] {str(e)}")
