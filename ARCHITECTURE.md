@@ -38,9 +38,15 @@
    * **異常處理：** 若下載失敗或提取失敗，觸發錯誤標記，路由至 Human Loop。
    * **數據輸出：** 返回 `FinancialStatements` Pydantic 對象，包含 fiscal_year, total_revenue, net_income, source
 
-2. **Node B: Calculator**
-   * 職責：執行純 Python 數學運算 (三表配平, 估值比率, DCF)。
-   * 特點：不使用 LLM，確保計算準確性。
+2. **Node B: Calculator** ✅ (Sprint 3 已實現)
+   * 職責：執行純 Python 數學運算 (估值比率、盈利能力指標)。
+   * **技術實現：**
+     * 使用 `yfinance` 獲取實時股價和市值數據
+     * 計算 P/E Ratio (本益比) = Market Cap / Net Income
+     * 計算 Net Profit Margin (淨利率) = Net Income / Revenue
+     * 簡單估值狀態判斷（基於 P/E 區間）
+   * **特點：** 不使用 LLM，確保計算準確性。所有計算均為純 Python 數學運算。
+   * **數據輸出：** 返回 `ValuationMetrics` Pydantic 對象，包含 market_cap, current_price, net_profit_margin, pe_ratio, valuation_status
 
 3. **Node C: Researcher**
    * 職責：使用 Deep Research 模式搜索市場情緒、競爭格局。
@@ -171,7 +177,7 @@ Nodes (依賴 State 和 Models)
 
 * `src/models/valuation.py` - `ValuationMetrics` 模型
   * 定義估值指標數據結構
-  * 包含：pe_ratio, valuation_status
+  * 包含：market_cap, current_price, net_profit_margin, pe_ratio, valuation_status
 
 ### 10.2 設計原則
 
@@ -218,11 +224,16 @@ def calculator_node(state: AgentState) -> dict:
   * Gemini 結構化提取
   * 返回強類型 `FinancialStatements` 對象
 
+* ✅ **Node B: Calculator** (Sprint 3)
+  * 使用 `yfinance` 獲取實時市場數據（股價、市值）
+  * 純 Python 數學計算（P/E Ratio, Net Profit Margin）
+  * 估值狀態判斷（基於 P/E 區間）
+  * 返回強類型 `ValuationMetrics` 對象
+
 ### 11.2 待實現節點
 
-* ⏳ **Node B: Calculator** - 財務計算（DCF, 估值比率）
-* ⏳ **Node C: Researcher** - 深度市場研究
-* ⏳ **Node D: Writer** - 報告生成
+* ⏳ **Node C: Researcher** - 深度市場研究（Tavily API + Gemini）
+* ⏳ **Node D: Writer** - 報告生成（Gemini）
 * ⏳ **Human Node** - 完整的人機交互流程
 
 ## 12. 擴展性考慮
