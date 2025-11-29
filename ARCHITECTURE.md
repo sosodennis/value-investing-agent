@@ -53,11 +53,13 @@
        * **智能增長率推導：**
          * 策略 A: 透過 PEG Ratio 反推市場隱含增長率 (Growth = P/E / PEG / 100)
          * 策略 B: 基於 P/E 分層規則（P/E > 50 → 25%, P/E > 25 → 15%, 其他 → 10%）
-       * **動態 WACC 計算（CAPM 模型）：**
+       * **動態 WACC 計算（CAPM + Hurdle Rate 混合模型）：**
          * 無風險利率 (Rf): 從 `^TNX` (10年期國債收益率) 實時獲取
          * 市場風險溢價 (ERP): 設為 5% (歷史平均水平)
-         * WACC = Rf + Beta × ERP
-         * 安全邊界檢查：6% < WACC < 15%
+         * CAPM WACC = Rf + Beta × ERP
+         * **保底折現率 (Hurdle Rate):** RoundUp(Rf) + 5.5% (防止低 Beta 導致折現率過低)
+         * **最終 WACC:** Max(CAPM WACC, Hurdle Rate) - 取兩者之大者
+         * 這確保低 Beta 公司（如 UNH）不會因折現率過低而產生估值泡沫
        * 預測未來 5 年現金流（基於動態增長率）
        * 計算終值 (Terminal Value)
        * 折現回現值 (NPV，使用動態 WACC)
@@ -258,13 +260,16 @@ def calculator_node(state: AgentState) -> dict:
   * Gemini 結構化提取
   * 返回強類型 `FinancialStatements` 對象（包含現金流數據）
 
-* ✅ **Node B: Calculator** (Sprint 3 + Sprint 5 + Sprint 6 + Sprint 6.5)
+* ✅ **Node B: Calculator** (Sprint 3 + Sprint 5 + Sprint 6 + Sprint 6.5 + Sprint 7)
   * 使用 `yfinance` 獲取實時市場數據（股價、市值、流通股數、PEG Ratio、Beta、無風險利率 ^TNX、TTM P/E）
   * 純 Python 數學計算（P/E Ratio, Net Profit Margin）
   * **雙軌 P/E 驗證：** 對比 FY P/E 和 TTM P/E，判斷獲利趨勢（改善/穩定/衰退）
   * **2-Stage DCF 模型（智能動態參數）：**
     * **智能增長率：** 透過 PEG Ratio 反推市場隱含增長率，或基於 P/E 分層規則
-    * **動態 WACC：** 使用 CAPM 模型 (Rf + Beta × ERP) 計算每家公司獨特的折現率
+    * **動態 WACC (Hybrid 模型)：** 
+      * CAPM 計算：Rf + Beta × ERP
+      * 保底折現率：RoundUp(Rf) + 5.5% (Hurdle Rate)
+      * 最終 WACC：Max(CAPM, Hurdle Rate) - 防止低 Beta 公司估值泡沫
     * 預測未來現金流、計算終值、折現回現值
   * 計算每股內在價值和上行/下行空間
   * 估值狀態判斷（基於 P/E 區間）
@@ -297,6 +302,6 @@ def calculator_node(state: AgentState) -> dict:
 * **文件格式兼容性：** 已支持 HTML 和 TXT (Full Submission) 格式，適應 `sec-edgar-downloader` 新版本行為
 * **DCF 模型：** 已實現 2-Stage DCF，支持預測未來現金流和計算內在價值，使 Agent 具備「預測未來」的能力
 * **智能增長率：** 透過 PEG Ratio 反推市場隱含增長率，或基於 P/E 分層規則，使 DCF 模型能夠智能適應成長股和價值股
-* **動態 WACC：** 使用 CAPM 模型實時計算折現率，從 `^TNX` 獲取無風險利率，結合 Beta 和市場風險溢價，使估值反映真實風險水平
+* **動態 WACC (Hybrid 模型)：** 使用 CAPM 模型實時計算折現率，從 `^TNX` 獲取無風險利率，結合 Beta 和市場風險溢價。引入 Hurdle Rate 保底機制（RoundUp(Rf) + 5.5%），確保低 Beta 公司不會因折現率過低而產生估值泡沫，使估值更符合實戰派標準
 * **雙軌 P/E 驗證：** 對比財報 P/E 和實時 TTM P/E，通過差異分析判斷公司獲利趨勢，解決「舊財報 vs 新股價」的時間錯配問題
 

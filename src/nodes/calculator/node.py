@@ -7,6 +7,7 @@ This node orchestrates financial calculations:
 3. Performs ratio calculations using tools.calculate_metrics()
 """
 
+import math
 from src.state import AgentState
 from src.models.valuation import ValuationMetrics
 from src.nodes.calculator.tools import get_market_data, calculate_metrics, calculate_dcf
@@ -93,27 +94,40 @@ def calculator_node(state: AgentState) -> dict:
                 estimated_growth_rate = 0.15  # 中高成長
                 print("📈 [Insight] 檢測到中高 P/E (>25)，啟用適度增長假設 (15%)")
         
-        # --- [New] 動態計算 WACC (Discount Rate) ---
+        # --- [New] 動態計算 WACC (Discount Rate) with Hurdle Rate Floor ---
         # 1. 獲取參數
-        rf = market_data.get('risk_free_rate', 0.042)
+        rf = market_data.get('risk_free_rate', 0.042)  # 默認 4.2%
         beta = market_data.get('beta')
         market_premium = 0.05  # 設為 5% (歷史平均水平，Aswath Damodaran 的標準)
         
-        estimated_discount_rate = 0.10  # 默認值
-        
+        # 2. 計算標準 CAPM WACC
+        capm_wacc = 0.10  # Fallback
         if beta:
-            # CAPM 模型: Re = Rf + Beta * ERP
-            calculated_wacc = rf + beta * market_premium
-            
-            # 設置合理區間 (例如 6% ~ 15%)
-            # 因為有時候 Beta 會異常 (例如負數或極大)
-            if 0.06 < calculated_wacc < 0.15:
-                estimated_discount_rate = calculated_wacc
-                print(f"📉 [Insight] CAPM WACC 計算: Rf({rf:.1%}) + Beta({beta:.2f}) * 5% = {estimated_discount_rate:.1%}")
-            else:
-                print(f"⚠️ [Insight] CAPM 計算值 ({calculated_wacc:.1%}) 超出合理範圍，使用默認折現率 (10%)")
+            capm_wacc = rf + beta * market_premium
+            print(f"📉 [WACC] CAPM Raw: {capm_wacc:.1%}")
         else:
-            print("⚠️ [Insight] 缺失 Beta 數據，無法計算 CAPM，使用默認折現率 (10%)")
+            print("⚠️ [WACC] 缺失 Beta 數據，使用默認 CAPM (10%)")
+        
+        # 3. [New] 計算保底折現率 (Hurdle Rate)
+        # 邏輯參考：RoundUp(Rf) + 5.5% (Risk Premium Floor)
+        # 這裡我們使用 math.ceil 對 Rf 進行向上取整 (例如 4.2% -> 5.0%)
+        rf_percent = rf * 100
+        rf_rounded = math.ceil(rf_percent) / 100
+        hurdle_premium = 0.055  # 設定為 5.5% (折衷方案，介於 5-6% 之間)
+        
+        hurdle_rate = rf_rounded + hurdle_premium
+        print(f"🛡️ [WACC] Hurdle Rate Floor: {hurdle_rate:.1%}")
+        
+        # 4. 決策：取兩者之大者
+        # 這是為了防止低 Beta 導致折現率過低，同時也保留了高 Beta (如 TSLA) 的高折現率
+        final_discount_rate = max(capm_wacc, hurdle_rate)
+        
+        if final_discount_rate == hurdle_rate:
+            print(f"⚖️ [WACC Adjustment] CAPM 過低，啟用保底折現率: {final_discount_rate:.1%}")
+        else:
+            print(f"⚖️ [WACC Adjustment] 使用 CAPM 折現率: {final_discount_rate:.1%}")
+        
+        estimated_discount_rate = final_discount_rate
         
         # --- 執行 DCF ---
         # 準備數據
