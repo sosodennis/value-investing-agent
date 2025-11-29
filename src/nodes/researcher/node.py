@@ -4,7 +4,7 @@ Node C: Researcher - Main Node Logic
 This node orchestrates deep research:
 1. Searches market sentiment using Tavily API
 2. Analyzes competitive landscape
-3. Synthesizes qualitative insights using Gemini 1.5 Pro
+3. Synthesizes qualitative insights using Gemini
 """
 
 from src.state import AgentState

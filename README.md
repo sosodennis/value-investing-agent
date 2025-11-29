@@ -80,14 +80,14 @@ ai_equity_analyst/
 * **Orchestration:** LangGraph (StateGraph)
 * **LLM Framework:** LangChain 1.1+
 * **LLM Provider:** Google Vertex AI / Gemini API
-* **Extraction Model:** Gemini 1.5 Flash (低成本、快速，適合結構化數據提取)
-* **Reasoning Model:** Gemini 1.5 Pro (超大上下文窗口 200萬 Token，適合完整 10-K 分析)
+* **Extraction Model:** Gemini (低成本、快速，適合結構化數據提取)
+* **Reasoning Model:** Gemini (超大上下文窗口，適合完整 10-K 分析)
 * **Data Sources:** SEC EDGAR (10-K), Yahoo Finance (Price), Tavily (News)
 
 ### 為什麼選擇 Gemini？
 
 * **超長 Context Window:** 可以將整個 10-K 年報直接輸入，無需複雜的 RAG 或 Chunking
-* **成本效益:** Gemini 1.5 Flash 極其便宜，適合數據提取任務
+* **成本效益:** Gemini 極其便宜，適合數據提取任務
 * **全盤分析能力:** 無需切片，可以對整份財報進行全局語義理解
 
 ## 開發路線圖

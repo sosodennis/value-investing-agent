@@ -13,13 +13,14 @@ load_dotenv()
 
 def main():
     """Main execution function."""
-    print("🚀 啟動 AI Equity Analyst (Sprint 1 Test)...")
+    print("🚀 啟動 AI Equity Analyst (Sprint 2 - Real Data Miner)...")
     app = build_graph()
-    config = {"configurable": {"thread_id": "test_sprint1"}}
+    config = {"configurable": {"thread_id": "test_sprint2"}}
     
-    # 第一次運行
-    print("\n📊 開始分析流程...")
-    for event in app.stream({"ticker": "GOOGL"}, config=config):
+    # 使用真實股票代碼進行測試（確保有 10-K 的大公司）
+    ticker = "AAPL"  # 可以改為 TSLA, MSFT, GOOGL 等
+    print(f"\n📊 開始分析流程 - Ticker: {ticker}...")
+    for event in app.stream({"ticker": ticker}, config=config):
         for node_name, node_output in event.items():
             print(f"   ✓ {node_name} 完成")
     

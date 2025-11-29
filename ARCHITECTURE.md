@@ -11,24 +11,32 @@
 * **Orchestration:** LangGraph (StateGraph)
 * **LLM Framework:** LangChain 1.1+
 * **LLM Provider:** Google Vertex AI / Gemini API
-* **Extraction Model:** Gemini 1.5 Flash (低成本、快速，適合結構化數據提取)
-* **Reasoning Model:** Gemini 1.5 Pro (超大上下文窗口，適合完整 10-K 分析)
+* **Extraction Model:** Gemini (低成本、快速，適合結構化數據提取)
+* **Reasoning Model:** Gemini (超大上下文窗口，適合完整 10-K 分析)
 * **Data Sources:** SEC EDGAR (10-K), Yahoo Finance (Price), Tavily (News)
 
 ### 2.1 為什麼選擇 Gemini？
 
-* **超長 Context Window:** Gemini 1.5 Pro 擁有 **200萬 Token** 的上下文窗口，可以將整個 10-K 年報（50K-100K tokens）直接輸入，無需複雜的 RAG 或 Chunking 邏輯
-* **成本效益:** Gemini 1.5 Flash 極其便宜，適合 Node A 的數據提取任務
+* **超長 Context Window:** Gemini 擁有 **超大 Token** 的上下文窗口，可以將整個 10-K 年報（50K-100K tokens）直接輸入，無需複雜的 RAG 或 Chunking 邏輯
+* **成本效益:** Gemini 極其便宜，適合數據提取任務
 * **全盤分析能力:** 無需切片，可以對整份財報進行全局語義理解
 
 ## 3. 數據流架構 (Data Flow)
 
 系統採用**混合循環圖 (Hybrid Cyclic Graph)** 設計：
 
-1. **Node A: Data Miner**
-   * 職責：從 SEC 下載財報 HTML，清洗為 Markdown，提取結構化 JSON。
-   * **技術優勢：** 利用 Gemini 1.5 Flash 的長上下文窗口，可以將整個 10-K 章節（如完整的 Item 7 MD&A）直接傳遞給 LLM，無需複雜的切片邏輯。
-   * 異常處理：若下載失敗，觸發錯誤標記，路由至 Human Loop。
+1. **Node A: Data Miner** ✅ (Sprint 2 已實現)
+   * 職責：從 SEC 下載財報，清洗為 Markdown，提取結構化數據。
+   * **技術實現：**
+     * 使用 `sec-edgar-downloader` 從 SEC EDGAR 下載最新 10-K 文件
+     * **雙格式支持：** 自動識別 HTML (Primary Document) 和 TXT (Full Submission) 格式
+     * 使用 `beautifulsoup4` 解析混合格式（BeautifulSoup 可處理包含 XML/SGML 標頭的內容）
+     * 使用 `markdownify` 將內容轉換為 Markdown（自動忽略非 HTML 標籤如 SEC-HEADER）
+     * 智能定位財務報表章節（如 "Consolidated Statements of Operations"）
+     * 使用 Gemini 的 `with_structured_output()` 直接提取為 Pydantic 對象
+   * **技術優勢：** 利用 Gemini 的長上下文窗口，可以將整個財務報表章節直接傳遞給 LLM，無需複雜的切片邏輯。
+   * **異常處理：** 若下載失敗或提取失敗，觸發錯誤標記，路由至 Human Loop。
+   * **數據輸出：** 返回 `FinancialStatements` Pydantic 對象，包含 fiscal_year, total_revenue, net_income, source
 
 2. **Node B: Calculator**
    * 職責：執行純 Python 數學運算 (三表配平, 估值比率, DCF)。
@@ -36,11 +44,11 @@
 
 3. **Node C: Researcher**
    * 職責：使用 Deep Research 模式搜索市場情緒、競爭格局。
-   * **技術優勢：** 使用 Gemini 1.5 Flash 進行數據提取，Gemini 1.5 Pro 進行深度定性分析。
+   * **技術優勢：** 使用 Gemini 進行數據提取和深度定性分析。
 
 4. **Node D: Writer**
    * 職責：匯總所有結構化與非結構化數據，生成 Markdown 報告。
-   * **技術優勢：** 使用 Gemini 1.5 Pro 的大上下文窗口，可以一次性整合所有分析結果生成完整報告。
+   * **技術優勢：** 使用 Gemini 的大上下文窗口，可以一次性整合所有分析結果生成完整報告。
 
 ## 4. 全局狀態定義 (Agent State)
 
@@ -199,11 +207,31 @@ def calculator_node(state: AgentState) -> dict:
         income = financial_data.net_income
 ```
 
-## 11. 擴展性考慮
+## 11. 實現狀態 (Implementation Status)
+
+### 11.1 已完成節點
+
+* ✅ **Node A: Data Miner** (Sprint 2)
+  * 真實 SEC 10-K 下載功能
+  * **雙格式支持：** 自動處理 HTML 和 TXT (Full Submission) 格式
+  * HTML/Markdown 轉換（支持混合格式解析）
+  * Gemini 結構化提取
+  * 返回強類型 `FinancialStatements` 對象
+
+### 11.2 待實現節點
+
+* ⏳ **Node B: Calculator** - 財務計算（DCF, 估值比率）
+* ⏳ **Node C: Researcher** - 深度市場研究
+* ⏳ **Node D: Writer** - 報告生成
+* ⏳ **Human Node** - 完整的人機交互流程
+
+## 12. 擴展性考慮
 
 * 支持多股票並行分析（未來 Phase）
 * 支持自定義分析模板（報告格式可配置）
 * 支持多種估值模型（DCF, P/E, P/B 等）
 * 新增領域模型：在 `src/models/` 中添加新的 Pydantic 模型
 * 新增節點：在 `src/nodes/` 中創建新的節點包
+* 優化數據提取：支持更多財務報表類型（10-Q, 8-K 等）
+* **文件格式兼容性：** 已支持 HTML 和 TXT (Full Submission) 格式，適應 `sec-edgar-downloader` 新版本行為
 

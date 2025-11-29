@@ -4,7 +4,7 @@ Node A: Data Miner Module
 This module is responsible for:
 1. Downloading SEC 10-K filings from EDGAR
 2. Cleaning HTML to Markdown
-3. Extracting structured financial data as JSON using Gemini 1.5 Flash
+3. Extracting structured financial data as JSON using Gemini
 
 Exception handling: If download fails, triggers error flag and routes to Human Loop.
 """

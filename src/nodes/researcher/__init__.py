@@ -6,7 +6,7 @@ This node performs deep research using:
 - Competitive landscape research
 - Industry trend analysis
 
-Uses Gemini 1.5 Flash for data extraction and Gemini 1.5 Pro for qualitative analysis.
+Uses Gemini for data extraction and qualitative analysis.
 """
 
 from .node import researcher_node
