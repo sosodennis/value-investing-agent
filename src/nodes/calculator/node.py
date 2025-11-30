@@ -1,181 +1,94 @@
 """
-Node B: Calculator - Main Node Logic (Refactored Architecture)
+Node B: Calculator - Strategy Dispatcher (Refactored to Strategy Pattern)
 
-Flow:
-1. Data Layer (Tools): Fetch Raw Data.
-2. Logic Layer (Logic): Determine Growth & Discount Rates & Exit Multiples.
-3. Calculation Layer (Tools): Execute DCF Engines with Dual Scenarios.
-4. Presentation Layer: Aggregate Metrics.
+This node now acts as a dispatcher that routes to the appropriate valuation strategy
+based on the company's sector/industry. Currently defaults to GeneralDCFStrategy.
 """
 
 from src.state import AgentState
-from src.models.valuation import ValuationMetrics
-from src.nodes.calculator.tools import get_market_data_raw, get_normalized_income_data, calculate_historical_growth, calculate_dcf
-from src.nodes.calculator.logic import determine_growth_rate, calculate_discount_rates, determine_exit_multiple
+from src.consts import ValuationStrategyType
+from src.nodes.calculator.strategies.general import GeneralDCFStrategy
+
 
 def calculator_node(state: AgentState) -> dict:
+    """
+    Calculator node function (Strategy Pattern Dispatcher).
+    
+    This function:
+    1. Prepares data from state
+    2. Routes to appropriate strategy (currently defaults to GeneralDCFStrategy)
+    3. Executes strategy and returns results
+    
+    Returns:
+        dict: Updated state with valuation_metrics (ValuationMetrics) or error
+    """
     ticker = state["ticker"]
-    print(f"\n🧮 [Calculator] Processing {ticker} (Refactored Structure)...")
+    print(f"\n🧮 [Node B: Calculator] 正在計算 {ticker} ...")
     
-    # 1. 數據獲取 (Data Layer)
-    md = get_market_data_raw(ticker)
-    if not md: return {"error": "Market Data Failed"}
+    # 1. 數據準備
+    financial_obj = state.get("financial_data")
+    if not financial_obj:
+        print("❌ 錯誤：找不到財務數據，無法計算。")
+        return {"error": "missing_financial_data"}
     
-    fin_obj = state.get("financial_data")
-    financials = fin_obj.model_dump()
-    nri_data = get_normalized_income_data(ticker)
-    print(f"📥 [Sector] {md['sector']} | Market Cap: ${md['market_cap']/1e9:.2f}B")
+    # 2. 策略路由 (Strategy Routing)
+    # 根據 Profiler 節點選擇的策略進行路由
+    strategy_code = state.get("valuation_strategy", ValuationStrategyType.GENERAL_DCF.value)
     
-    # 2. 核心參數決策 (Logic Layer)
-    # A. Growth
-    hist_growth = calculate_historical_growth(ticker)
-    growth_dec = determine_growth_rate(
-        hist_growth, md['peg_ratio'], md['pe_ratio'], md['roe'], md['payout_ratio']
-    )
-    print(f"📊 [Growth] {growth_dec['rate']:.1%} | Reason: {growth_dec['source']}")
+    print(f"🎯 [Strategy Router] 使用策略: {strategy_code}")
+    if state.get("strategy_reasoning"):
+        print(f"💡 [Reasoning] {state['strategy_reasoning']}")
     
-    # B. Discount
-    disc_dec = calculate_discount_rates(
-        md['risk_free_rate'], md['beta'], md['market_cap'], 
-        md['ebit'], md['interest_expense'], md['total_debt'], md['market_cap']
-    )
-    print(f"⚖️ [Discount] WACC: {disc_dec['wacc']:.1%} | Ke: {disc_dec['ke']:.1%}")
-    
-    # C. Exit Multiple Decision (New)
-    exit_mult_dec = determine_exit_multiple(
-        md['pe_ratio'], 
-        growth_dec['rate'], 
-        md['sector']
-    )
-    print(f"🎯 [Exit Multiple] Target: {exit_mult_dec['multiple']:.1f}x | Reason: {exit_mult_dec['reason']}")
-    
-    # 3. 準備 DCF 輸入 (Scenario Preparation)
-    shares = md['shares_outstanding']
-    net_debt = md['total_debt'] - md['cash_and_equivalents']
-    
-    # Base Values
-    # [FIX] Explicitly define raw_ni (GAAP Net Income) first
-    raw_ni = financials['net_income'] * 1_000_000
-    
-    # Use Normalized Income if available for better accuracy, else GAAP Net Income
-    earnings_base = 0.0
-    is_normalized = False
-    if nri_data and nri_data.get('normalized_income'):
-        earnings_base = nri_data['normalized_income']
-        is_normalized = nri_data.get('use_normalized', False)
+    # 根據策略代碼選擇對應的策略實現
+    # 使用 Enum 做判斷，更安全且易於維護
+    # 目前只實現了 general_dcf，其他策略會回退到 general_dcf
+    if strategy_code == ValuationStrategyType.GENERAL_DCF.value:
+        strategy = GeneralDCFStrategy()
+    elif strategy_code == ValuationStrategyType.BANK_DDM.value:
+        # TODO: 實現 BankDDMStrategy
+        print(f"⚠️ [Strategy] {ValuationStrategyType.BANK_DDM.value} 尚未實現，回退到 general_dcf")
+        strategy = GeneralDCFStrategy()
+    elif strategy_code == ValuationStrategyType.REIT_NAV.value:
+        # TODO: 實現 ReitNAVStrategy
+        print(f"⚠️ [Strategy] {ValuationStrategyType.REIT_NAV.value} 尚未實現，回退到 general_dcf")
+        strategy = GeneralDCFStrategy()
+    elif strategy_code == ValuationStrategyType.SAAS_RULE40.value:
+        # TODO: 實現 SaaSRule40Strategy
+        print(f"⚠️ [Strategy] {ValuationStrategyType.SAAS_RULE40.value} 尚未實現，回退到 general_dcf")
+        strategy = GeneralDCFStrategy()
     else:
-        earnings_base = raw_ni
+        # 未知策略，回退到默認
+        print(f"⚠️ [Strategy] 未知策略 '{strategy_code}'，回退到 general_dcf")
+        strategy = GeneralDCFStrategy()
     
-    # FCF (Street): OCF - Capex
-    raw_fcf = (fin_obj.operating_cash_flow - abs(fin_obj.capital_expenditures)) * 1_000_000
-    if md['fcf_ttm'] > 0:
-        raw_fcf = md['fcf_ttm']
+    try:
+        # 3. 執行策略
+        # 注意：strategy.calculate() 內部會重新獲取 market_data 以確保包含所有必要字段
+        metrics_obj = strategy.calculate(
+            ticker=ticker,
+            financial_data=financial_obj,
+            market_data={}  # Strategy 內部會重新獲取，這裡傳空字典作為占位符
+        )
         
-    sbc = md['sbc']
-    
-    # Scenario 1: Conservative (SBC is Cost)
-    base_eps_cons = earnings_base # Usually Normalized Income is best proxy for owner earnings base
-    base_fcf_cons = raw_fcf - sbc
-    if base_fcf_cons < 0: base_fcf_cons = 0
-    
-    # Scenario 2: Street (SBC is ignored)
-    base_eps_street = earnings_base + sbc # Add back SBC to mimic Non-GAAP
-    base_fcf_street = raw_fcf
-    
-    print(f"🎭 [Scenario] SBC: ${sbc/1e9:.2f}B")
-    
-    # 4. 執行計算 (Calculation Layer)
-    
-    # --- Conservative Scenario ---
-    # Track A: FCF Model
-    res_fcf = calculate_dcf(
-        base_fcf_cons, shares, net_debt, 
-        growth_dec['rate'], disc_dec['wacc'], 
-        exit_multiple=exit_mult_dec['multiple'],
-        method="FCF(Cons)"
-    )
-    
-    # Track B: EPS Model (Net Debt = 0 for Equity Valuation)
-    res_eps = calculate_dcf(
-        base_eps_cons, shares, 0.0, 
-        growth_dec['rate'], disc_dec['ke'], 
-        exit_multiple=exit_mult_dec['multiple'],
-        method="EPS(Cons)"
-    )
-    
-    # --- Street Scenario (Bull Case) ---
-    res_fcf_bull = calculate_dcf(
-        base_fcf_street, shares, net_debt,
-        growth_dec['rate'], disc_dec['wacc'], 
-        exit_multiple=exit_mult_dec['multiple'],
-        method="FCF(Street)"
-    )
-    res_eps_bull = calculate_dcf(
-        base_eps_street, shares, 0.0,
-        growth_dec['rate'], disc_dec['ke'], 
-        exit_multiple=exit_mult_dec['multiple'],
-        method="EPS(Street)"
-    )
-    
-    # 5. 結果匯總 & 智能決策
-    
-    def select_val(v_fcf, v_eps, sect):
-        if "Financial" in sect or "Bank" in sect: return v_eps
-        if "Real Estate" in sect: return v_fcf
-        if v_fcf > 0 and v_eps > 0: return (v_fcf + v_eps) / 2
-        return max(v_fcf, v_eps)
-
-    val_cons = select_val(res_fcf['intrinsic_value'], res_eps['intrinsic_value'], md['sector'])
-    val_bull = select_val(res_fcf_bull['intrinsic_value'], res_eps_bull['intrinsic_value'], md['sector'])
-    
-    curr_price = md['price']
-    upside = (val_cons - curr_price) / curr_price if curr_price else 0
-    
-    print(f"💎 [Result] Conservative: ${val_cons:.2f} (Upside: {upside:.1%}) | Bull: ${val_bull:.2f}")
-    
-    # Populate Metrics
-    pe_ttm = md['pe_ratio'] if md['pe_ratio'] else 0
-    
-    # Calculate FY P/E
-    pe_fy = 0
-    if earnings_base > 0 and md['market_cap'] > 0:
-        pe_fy = md['market_cap'] / earnings_base
+        print(f"✅ [Calculator] 策略執行完成。DCF: ${metrics_obj.dcf_value:.2f} (Upside: {metrics_obj.dcf_upside:.2f}%)")
         
-    # Calculate Margin
-    rev_m = financials.get('total_revenue', 0)
-    ni_m = financials.get('net_income', 0)
-    margin = (ni_m / rev_m * 100) if rev_m > 0 else 0
-    
-    eps_norm = earnings_base / shares if shares else 0
-
-    # [Polish] Restore Trend Insight
-    trend_insight = "Stable"
-    if pe_ttm and pe_fy > 0:
-        diff_pct = (pe_ttm - pe_fy) / pe_fy
-        if diff_pct < -0.05:
-            trend_insight = f"Earnings Improving (Forward PE {pe_fy:.1f} < TTM {pe_ttm:.1f})"
-        elif diff_pct > 0.05:
-            trend_insight = f"Earnings Declining (Forward PE {pe_fy:.1f} > TTM {pe_ttm:.1f})"
-
-    metrics_dict = {
-        "market_cap": md['market_cap'] / 1_000_000, 
-        "current_price": curr_price,
-        "dcf_value": val_cons,
-        "dcf_value_bull": val_bull,
-        "dcf_upside": round(upside * 100, 2),
-        "valuation_status": "Undervalued" if upside > 0.1 else ("Overvalued" if upside < -0.1 else "Fair Value"),
-        "pe_ratio": pe_ttm,
-        "net_profit_margin": round(margin, 2),
-        "pe_ratio_ttm": pe_ttm,
-        "pe_ratio_fy": round(pe_fy, 2),
-        "pe_trend_insight": trend_insight, 
-        "eps_ttm": raw_ni / shares if shares else 0, # GAAP EPS
-        "eps_normalized": round(eps_norm, 2),
-        "is_normalized": is_normalized
-    }
-    
-    return {
-        "valuation_metrics": ValuationMetrics(**metrics_dict),
-        "investigation_tasks": [],
-        "error": None
-    }
+        # 4. 檢查異常並生成調查任務（保留原有邏輯）
+        investigation_tasks = []
+        
+        # 如果有標準化淨利差異，生成調查任務
+        if metrics_obj.is_normalized:
+            # 這裡我們需要獲取原始 GAAP 淨利來比較
+            # 為了保持簡單，我們暫時跳過這個檢查，因為 strategy 內部已經處理了
+            pass
+        
+        return {
+            "valuation_metrics": metrics_obj,
+            "investigation_tasks": investigation_tasks,
+            "error": None
+        }
+        
+    except Exception as e:
+        print(f"❌ 計算錯誤: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": "calculation_failed"}

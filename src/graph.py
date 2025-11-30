@@ -9,6 +9,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.state import AgentState
+from src.nodes.profiler.node import profiler_node
 from src.nodes.data_miner.node import data_miner_node
 from src.nodes.calculator.node import calculator_node
 from src.nodes.researcher.node import researcher_node
@@ -45,6 +46,7 @@ def build_graph():
     workflow = StateGraph(AgentState)
     
     # Add Nodes
+    workflow.add_node("profiler", profiler_node)
     workflow.add_node("miner", data_miner_node)
     workflow.add_node("human_help", request_human_help_node)
     workflow.add_node("calculator", calculator_node)
@@ -52,7 +54,9 @@ def build_graph():
     workflow.add_node("writer", writer_node)
     
     # Add Edges
-    workflow.add_edge(START, "miner")
+    # Start -> Profiler -> Miner -> ...
+    workflow.add_edge(START, "profiler")
+    workflow.add_edge("profiler", "miner")
     
     workflow.add_conditional_edges(
         "miner",

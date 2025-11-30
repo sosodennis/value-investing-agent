@@ -30,6 +30,13 @@ class AgentState(TypedDict):
     """
     ticker: str
     
+    # --- [New] 公司戰略畫像 ---
+    company_name: Optional[str]
+    sector: Optional[str]
+    industry: Optional[str]
+    valuation_strategy: str  # e.g., "general_dcf", "bank_ddm", "reit_nav", "saas_rule40"
+    strategy_reasoning: Optional[str]  # LLM 選擇該策略的理由
+    
     # --- 原始數據 ---
     sec_text_chunk: Optional[str]
     
