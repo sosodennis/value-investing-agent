@@ -9,6 +9,7 @@ from src.state import AgentState
 from src.consts import ValuationStrategyType
 from src.nodes.calculator.strategies.general import GeneralDCFStrategy
 from src.nodes.calculator.strategies.reit_nav import ReitNAVStrategy
+from src.nodes.calculator.strategies.saas_rule40 import SaaSRule40Strategy
 
 
 def calculator_node(state: AgentState) -> dict:
@@ -53,9 +54,8 @@ def calculator_node(state: AgentState) -> dict:
         print("🏗️ [Strategy] 激活 REITs 專屬策略 (ReitNAVStrategy)...")
         strategy = ReitNAVStrategy()
     elif strategy_code == ValuationStrategyType.SAAS_RULE40.value:
-        # TODO: 實現 SaaSRule40Strategy
-        print(f"⚠️ [Strategy] {ValuationStrategyType.SAAS_RULE40.value} 尚未實現，回退到 general_dcf")
-        strategy = GeneralDCFStrategy()
+        print("☁️ [Strategy] 激活 SaaS Rule of 40 策略...")
+        strategy = SaaSRule40Strategy()
     else:
         # 未知策略，回退到默認
         print(f"⚠️ [Strategy] 未知策略 '{strategy_code}'，回退到 general_dcf")

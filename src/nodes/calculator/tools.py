@@ -76,6 +76,10 @@ def get_market_data_raw(ticker: str):
             if not tnx.empty: rf = float(tnx["Close"].iloc[-1]) / 100
         except: pass
 
+        # 5. Revenue Growth (for SaaS Rule of 40)
+        # yfinance 提供的 revenueGrowth 通常是季度同比增長 (Year-over-Year)
+        revenue_growth = info.get("revenueGrowth")
+
         return {
             "price": current_price,
             "market_cap": float(market_cap) if market_cap else 0.0,
@@ -93,6 +97,7 @@ def get_market_data_raw(ticker: str):
             "fcf_ttm": float(fcf_ttm) if fcf_ttm else 0.0,
             "roe": info.get("returnOnEquity"),
             "payout_ratio": info.get("payoutRatio"),
+            "revenue_growth": float(revenue_growth) if revenue_growth else None,  # 新增字段
             "fcf_data_source": "yfinance_info" if fcf_ttm else "calculated"
         }
     except Exception as e:
