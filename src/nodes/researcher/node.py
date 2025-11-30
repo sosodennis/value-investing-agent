@@ -53,7 +53,20 @@ def researcher_node(state: AgentState) -> dict:
     
     # 3. 獲取財務指標 (Node B 的產出)
     metrics = state.get("valuation_metrics")
-    metrics_context = f"P/E: {metrics.pe_ratio}, Status: {metrics.valuation_status}" if metrics else "N/A"
+    # 構建更詳細的指標上下文
+    if metrics:
+        metrics_context = f"""
+- 估值策略: {state.get('valuation_strategy', 'N/A')}
+- 估值狀態: {metrics.valuation_status}
+- 目標價: ${metrics.dcf_value:.2f} (Upside: {metrics.dcf_upside:.2f}%)
+- P/E 比率: {metrics.pe_ratio:.2f}x
+- 淨利率: {metrics.net_profit_margin:.2f}%
+- 市值: ${metrics.market_cap:.2f}M
+- 當前股價: ${metrics.current_price:.2f}
+- P/E 趨勢: {metrics.pe_trend_insight}
+"""
+    else:
+        metrics_context = "N/A"
     
     # 4. 調用 Gemini 進行綜合分析
     print("🤖 調用 Gemini 綜合分析 (News + SEC + Financials)...")
@@ -77,33 +90,50 @@ def researcher_node(state: AgentState) -> dict:
     請重點調查上述問題，請在報告中專門開闢章節說明。
     """
         prompt = f"""
-你是一位華爾街資深權益分析師。請根據提供的數據，對 {ticker} 進行深度定性分析。
+你是一位華爾街頂級對沖基金的投資總監。你需要根據 Quantitative (量化) 和 Qualitative (定性) 數據，構建一個令人信服的投資論點。
 
-【輸入數據】
+【量化數據 (Calculator Output)】
 
-1. 估值指標: {metrics_context}
+- 策略: {state.get('valuation_strategy', 'general_dcf')}
+- 估值狀態: {metrics.valuation_status if metrics else 'Unknown'}
+- 核心指標: {metrics_context}
+- 數據異常: {chr(10).join(f"- {task}" for task in tasks) if tasks else "無"}
 
-2. 最新市場新聞:
+【定性信息 (News & SEC)】
 
+1. 最新市場新聞:
 {news_context}
 
-3. SEC 10-K 財報片段 (MD&A):
-
+2. SEC 10-K 財報片段 (MD&A):
 {sec_text}
 
 {special_instruction_block}
 
-【任務】
+【任務要求】
 
-請綜合以上信息，生成一份分析報告。特別要注意：
+1. **Investment Thesis (投資論點):** 
+   不要只羅列事實。要把點連成線，構建一個完整的投資故事。
+   例如："雖然營收放緩，但利潤率因裁員而提升，且 DCF 顯示股價已反映了悲觀預期，因此是反轉機會。"
+   或者："儘管 P/E 高達 35 倍，但考慮到 Rule of 40 分數高達 50+，且新聞顯示其 AI 產品留存率極高，我們認為市場給予的高溢價是合理的。"
+   
+2. **Valuation Commentary (估值解讀):** 
+   必須解釋為什麼估值模型得出這個結果，以及這個結果是否合理。
+   - 如果 P/E 很高，是因為高增長 (PEG < 1) 嗎？還是因為炒作？
+   - 如果是 SaaS，Rule of 40 分數是否支撐了高 EV/Sales？
+   - 如果是 REITs，P/FFO 是否反映了利率環境和資產質量？
+   - 如果是銀行，低 P/B 是否反映了壞帳風險？
+   - 如果 DCF 顯示高估，但市場仍在買入，背後的原因是什麼？
 
-- 解釋為什麼該公司處於 {metrics.valuation_status if metrics else 'Unknown'} 狀態？(例如：是因為高增長預期導致的高 P/E 嗎？)
+3. **Catalysts (催化劑):** 
+   接下來 6-12 個月有什麼大事可能推動股價？(例如：財報發布、產品發布、監管決策、併購傳聞)
 
-- 從新聞中提取分析師觀點。
+4. **Risk Assessment (風險評估):** 
+   詳細分析主要下行風險，不僅僅是列舉，要說明這些風險如何影響投資論點。
 
-- 從財報中提取管理層對未來的展望。
+5. **Market Sentiment, Growth Drivers, Management Tone:** 
+   保持原有分析，但要在 Investment Thesis 中整合這些信息。
 
-- 識別關鍵增長驅動力和主要風險。
+請生成深度分析結果，確保 Investment Thesis 和 Valuation Commentary 能夠將量化指標與定性因素有機結合。
 """
         
         result = structured_llm.invoke(prompt)

@@ -73,37 +73,62 @@ def writer_node(state: AgentState) -> dict:
 
 【報告結構要求】
 
-# Investment Report: {ticker}
+# Investment Research Report: {ticker}
 
-## 1. Executive Summary (執行摘要)
+## 1. Investment Thesis (核心論點)
 
-- 給出明確的投資評級 (基於估值狀態)。
+*這裡放置 researcher 的 investment_thesis，用粗體標出最核心的邏輯。*
 
-- 用一句話總結核心論點。
+**核心論點：** {analysis.investment_thesis if analysis and hasattr(analysis, 'investment_thesis') else (analysis.summary if analysis else 'N/A')}
 
-## 2. Financial Highlights (財務亮點)
+---
 
-- 展示營收、淨利潤等關鍵數據。
+## 2. Valuation & Financials (估值與財務)
 
-- 評論 P/E {val.pe_ratio if val else 'N/A'} 倍數的合理性。
+### 2.1 估值模型 ({state.get('valuation_strategy', 'general_dcf')})
 
-## 3. Data Discrepancy Analysis (數據差異分析)
+- **目標價:** ${val.dcf_value:.2f} (Upside: {val.dcf_upside:.2f}%)
+- **評級:** **{val.valuation_status}**
+- **解讀:** {analysis.valuation_commentary if analysis and hasattr(analysis, 'valuation_commentary') else 'N/A'}
 
-{f"請詳細解釋以下數據異常：{discrepancy_context}引用 Researcher 找到的原因（例如：一次性費用、非經常性項目、網絡攻擊成本等）。如果 Researcher 的分析中提到了具體事件，請詳細說明。" if has_data_discrepancy else "Financials align with GAAP standards. No significant discrepancies detected."}
+*這裡是關鍵，解釋為什麼模型算出這個數字，以及這個數字是否合理。*
+
+### 2.2 關鍵財務指標
+
+- 當前股價: ${val.current_price:.2f}
+- 市值: ${val.market_cap:.2f}M
+- P/E 比率: {val.pe_ratio:.2f}x
+- 淨利率: {val.net_profit_margin:.2f}%
+
+{f"### 2.3 數據差異分析\n\n{discrepancy_context}\n\n引用 Researcher 找到的原因（例如：一次性費用、非經常性項目、網絡攻擊成本等）。如果 Researcher 的分析中提到了具體事件，請詳細說明。" if has_data_discrepancy else ""}
+
+---
+
+## 3. Key Catalysts & Risks (催化劑與風險)
+
+### 3.1 即將到來的催化劑
+
+{chr(10).join(f"- {catalyst}" for catalyst in (analysis.catalysts if analysis and hasattr(analysis, 'catalysts') else [])) if analysis and hasattr(analysis, 'catalysts') and analysis.catalysts else "- 無重大催化劑識別"}
+
+### 3.2 主要下行風險
+
+{analysis.risk_assessment if analysis and hasattr(analysis, 'risk_assessment') else (chr(10).join(f"- {risk}" for risk in (analysis.top_risks if analysis else [])) if analysis and analysis.top_risks else "- 無重大風險識別")}
+
+---
 
 ## 4. Strategic Analysis (戰略分析)
 
-- 市場情緒: {analysis.market_sentiment if analysis else 'N/A'}
+- **市場情緒:** {analysis.market_sentiment if analysis else 'N/A'}
+- **增長驅動力:** {chr(10).join(f"  - {driver}" for driver in (analysis.key_growth_drivers if analysis else [])) if analysis and analysis.key_growth_drivers else "  - N/A"}
+- **管理層語調:** {analysis.management_tone if analysis else 'N/A'}
 
-- 增長驅動力: (列點說明)
-
-- 關鍵風險: (列點說明)
+---
 
 ## 5. Conclusion (結論)
 
-- 總結性建議。
+基於以上分析，總結投資建議和核心邏輯。確保與 Investment Thesis 保持一致。
 
-請確保語氣專業、客觀，數據引用準確。使用繁體中文撰寫。
+請確保語氣專業、客觀，數據引用準確。使用繁體中文撰寫。報告應該有觀點、有故事、有靈魂，而不僅僅是數據堆砌。
 """
         
         response = llm.invoke([HumanMessage(content=prompt)])
