@@ -1,108 +1,115 @@
 """
-Node B: Calculator - Private Tools
+Node B: Calculator - Private Tools (Enhanced Version)
 
 This module contains financial calculation utilities:
-1. Market data fetching (yfinance)
+1. Market data fetching (yfinance) - Enhanced with Debt/Cash extraction
 2. Valuation ratio calculations (P/E, Margins, etc.)
 3. Financial data validation
-4. Normalized income extraction (NRI handling)
+4. Intrinsic Value Calculation (Dual-Track DCF: FCF & Earnings)
+5. Historical Growth Calculation (CAGR based on 4-year financials)
 
 All calculations are pure Python - no LLM involvement to ensure accuracy.
 """
 
 import yfinance as yf
 import pandas as pd
-
+import numpy as np
 
 def get_market_data(ticker: str):
     """
-    獲取實時市場數據：股價、市值、流通股數、PEG、Beta、以及無風險利率。
-    
-    Args:
-        ticker: Stock ticker symbol
-        
-    Returns:
-        dict: Contains 'price', 'market_cap', 'shares_outstanding', 'peg_ratio', 'beta', 'risk_free_rate', or None if failed
+    獲取全面的市場與財務數據，包括資產負債表數據以支持精確估值。
     """
     try:
         stock = yf.Ticker(ticker)
         
-        # 1. 基礎數據
-        # 獲取最新價格 (history 比 info 更快更穩定)
+        # --- 1. 基礎市場數據 (Price & Market Cap) ---
         hist = stock.history(period="1d")
         if hist.empty:
             raise ValueError(f"無法獲取 {ticker} 的股價數據")
         
         current_price = float(hist["Close"].iloc[-1])
-        
-        # 獲取市值 (Market Cap)
-        # 注意：info 接口有時會慢或失敗，生產環境建議加緩存或重試
         info = stock.info
-        market_cap = info.get("marketCap")
+        
+        # 優先使用 info 獲取流通股數，失敗則用市值反推 (單位：絕對值)
         shares = info.get("sharesOutstanding")
+        market_cap = info.get("marketCap")
         
-        if not market_cap:
-            # 如果拿不到市值，嘗試用 Price * Shares Outstanding 估算
-            if shares:
-                market_cap = current_price * shares
-            else:
-                raise ValueError("無法獲取市值數據")
+        if not shares and market_cap:
+            shares = market_cap / current_price
         
-        # 獲取流通股數
-        shares_outstanding = shares
-        if not shares_outstanding:
-            # 如果拿不到，用市值和股價反推
-            if market_cap and current_price:
-                shares_outstanding = market_cap / current_price
-            else:
-                shares_outstanding = 0
+        if not market_cap and shares:
+            market_cap = current_price * shares
+
+        # --- 2. 關鍵財務數據 (從報表獲取，比 info 更可靠) ---
+        # 獲取 Balance Sheet (用於計算 Net Debt 和 TBV)
+        bs = stock.balance_sheet
+        total_debt = 0.0
+        cash_and_equivalents = 0.0
+        tangible_book_value = 0.0
         
-        # 2. [New] 獲取 PEG Ratio (這是計算增長率的關鍵)
-        # yfinance 的 info 裡通常有 'pegRatio'
-        peg_ratio = info.get("pegRatio")
+        if not bs.empty:
+            latest_bs_date = bs.columns[0] # 取最近一期
+            
+            # (A) 債務與現金
+            for key in ['Total Debt', 'Total Liab', 'Long Term Debt']:
+                if key in bs.index:
+                    total_debt = float(bs.loc[key, latest_bs_date])
+                    break
+            
+            for key in ['Cash And Cash Equivalents', 'Cash Cash Equivalents And Short Term Investments']:
+                if key in bs.index:
+                    cash_and_equivalents = float(bs.loc[key, latest_bs_date])
+                    break
+            
+            # (B) Tangible Book Value
+            if 'Tangible Book Value' in bs.index:
+                tangible_book_value = float(bs.loc['Tangible Book Value', latest_bs_date])
+            elif 'Total Assets' in bs.index and 'Total Liab' in bs.index:
+                assets = bs.loc['Total Assets', latest_bs_date]
+                liabs = bs.loc['Total Liab', latest_bs_date]
+                intangibles = bs.loc['Intangible Assets', latest_bs_date] if 'Intangible Assets' in bs.index else 0
+                goodwill = bs.loc['Goodwill', latest_bs_date] if 'Goodwill' in bs.index else 0
+                tangible_book_value = float(assets - liabs - intangibles - goodwill)
         
-        # 3. [New] 獲取 Beta (用於計算 WACC)
-        beta = info.get("beta")
+        # 獲取 Cash Flow (用於計算真實 FCF)
+        cf = stock.cashflow
+        fcf_ttm = None
         
-        # 4. [New] 獲取 TTM P/E 和 Forward P/E
-        trailing_pe = info.get("trailingPE")
-        forward_pe = info.get("forwardPE")
-        
-        # 5. [New] 獲取無風險利率 (^TNX)
-        # 這是 CBOE 10-Year Treasury Note Yield Index
+        if not cf.empty:
+            latest_cf_date = cf.columns[0]
+            if 'Free Cash Flow' in cf.index:
+                fcf_ttm = float(cf.loc['Free Cash Flow', latest_cf_date])
+            elif 'Operating Cash Flow' in cf.index and 'Capital Expenditure' in cf.index:
+                ocf = cf.loc['Operating Cash Flow', latest_cf_date]
+                capex = cf.loc['Capital Expenditure', latest_cf_date]
+                fcf_ttm = float(ocf + capex)
+
+        if fcf_ttm is None:
+            fcf_ttm = info.get("freeCashflow")
+
+        # --- 3. 風險指標 ---
+        risk_free_rate = 0.042
         try:
             treasury = yf.Ticker("^TNX")
             tnx_hist = treasury.history(period="1d")
             if not tnx_hist.empty:
-                # Yahoo 返回的是 4.25 (代表 4.25%)，我們需要轉為 0.0425
                 risk_free_rate = float(tnx_hist["Close"].iloc[-1]) / 100
-            else:
-                risk_free_rate = 0.042  # 獲取失敗時的默認值 (4.2%)
-        except Exception as e:
-            print(f"⚠️ [Tool] 無法獲取 ^TNX，使用默認值: {e}")
-            risk_free_rate = 0.042
-        
-        # 6. [New] 獲取 TTM FCF 相關數據
-        # yfinance 通常在 info 中提供 'freeCashflow' (TTM)
-        # 如果沒有，我們嘗試獲取 'operatingCashflow' (TTM) 和 'capitalExpenditures' (TTM)
-        fcf_ttm = info.get("freeCashflow")
-        ocf_ttm = info.get("operatingCashflow")
-        
-        # 注意：yfinance 的 CapEx 通常在 info 裡沒有直接的 TTM 字段
-        # 有時需要容錯。如果 fcf_ttm 存在，直接用它最準確。
-        
+        except:
+            pass
+
         return {
             "price": current_price,
-            "market_cap": float(market_cap),
-            "shares_outstanding": float(shares_outstanding),
-            "peg_ratio": peg_ratio if peg_ratio else None,
-            "beta": beta if beta else None,
-            "trailing_pe": trailing_pe if trailing_pe else None,
-            "forward_pe": forward_pe if forward_pe else None,
+            "market_cap": float(market_cap) if market_cap else 0.0,
+            "shares_outstanding": float(shares) if shares else 0.0,
+            "peg_ratio": info.get("pegRatio"),
+            "beta": info.get("beta"),
+            "trailing_pe": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
             "risk_free_rate": risk_free_rate,
-            # 新增 TTM 數據
-            "fcf_ttm": float(fcf_ttm) if fcf_ttm else None,  # 單位：絕對值 (Bytes)
-            "ocf_ttm": float(ocf_ttm) if ocf_ttm else None  # 單位：絕對值 (Bytes)
+            "fcf_ttm": float(fcf_ttm) if fcf_ttm else 0.0,
+            "total_debt": total_debt,
+            "cash_and_equivalents": cash_and_equivalents,
+            "tangible_book_value": tangible_book_value
         }
     except Exception as e:
         print(f"❌ [Calculator Tool] yfinance error: {e}")
@@ -112,196 +119,194 @@ def get_market_data(ticker: str):
 def get_normalized_income_data(ticker: str) -> dict:
     """
     從 yfinance 的財務報表中提取標準化淨利 (Normalized Income)。
-    如果沒有，回退使用普通 Net Income。
-    
-    Args:
-        ticker: Stock ticker symbol
-        
-    Returns:
-        dict: Contains 'normalized_income', 'raw_net_income', 'shares_outstanding', 'use_normalized', or None if failed
     """
     try:
         stock = yf.Ticker(ticker)
-        
-        # 獲取年度損益表 (Financials)
         fin_df = stock.financials
         
         if fin_df.empty:
-            print(f"⚠️ [Tool] 無法獲取財務報表數據")
             return None
         
-        # yfinance 的 index 可能是 'Normalized Income' 或 'Net Income Continuous Operations'
-        # 我們嘗試獲取最新一年的數據 (列是日期，取第一列)
         latest_date = fin_df.columns[0]
         
-        # 1. 嘗試獲取標準化淨利
-        normalized_income = None
+        normalized_income = 0.0
         use_normalized = False
         
         if 'Normalized Income' in fin_df.index:
             normalized_income = fin_df.loc['Normalized Income', latest_date]
             use_normalized = True
-            print(f"✅ [Tool] 找到標準化淨利 (Normalized Income): {normalized_income/1_000_000:.2f}M")
-        else:
-            # 2. 回退到普通淨利
-            if 'Net Income' in fin_df.index:
-                normalized_income = fin_df.loc['Net Income', latest_date]
-                use_normalized = False
-                print(f"⚠️ [Tool] 未找到標準化數據，使用普通淨利: {normalized_income/1_000_000:.2f}M")
-            else:
-                print(f"❌ [Tool] 無法找到淨利數據")
-                return None
+        elif 'Net Income' in fin_df.index:
+            normalized_income = fin_df.loc['Net Income', latest_date]
         
-        # 獲取普通淨利作對比
-        raw_net_income = None
-        if 'Net Income' in fin_df.index:
-            raw_net_income = fin_df.loc['Net Income', latest_date]
-        
-        # 獲取流通股數 (用於計算 EPS)
-        info = stock.info
-        shares = info.get('sharesOutstanding')
+        raw_net_income = fin_df.loc['Net Income', latest_date] if 'Net Income' in fin_df.index else normalized_income
         
         return {
             "normalized_income": float(normalized_income),
-            "raw_net_income": float(raw_net_income) if raw_net_income is not None else float(normalized_income),
-            "shares_outstanding": float(shares) if shares else None,
+            "raw_net_income": float(raw_net_income),
             "use_normalized": use_normalized
         }
-        
     except Exception as e:
-        print(f"❌ [Tool Error] 無法獲取詳細財務數據: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ [Tool Error] Financial data error: {e}")
         return None
 
+def calculate_historical_growth(ticker: str) -> float:
+    """
+    [New] 計算過去 4 年的歷史增長率 (CAGR)。
+    優先使用 'Normalized Income'，其次使用 'Net Income'。
+    
+    Returns:
+        float: CAGR (e.g., 0.15 for 15%), or None if calculation not possible.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        fin_df = stock.financials
+        
+        if fin_df.empty or len(fin_df.columns) < 2:
+            return None
+        
+        # 確定使用的數據行
+        target_row = 'Net Income'
+        if 'Normalized Income' in fin_df.index:
+            target_row = 'Normalized Income'
+        elif 'Net Income' not in fin_df.index:
+            return None
+            
+        # 獲取數據序列 (從新到舊 -> 轉為從舊到新)
+        # yfinance columns are dates [2023, 2022, 2021, 2020]
+        values = fin_df.loc[target_row].values
+        values = values[::-1] # Reverse to [Oldest, ..., Newest]
+        
+        # 過濾掉 None/NaN
+        values = [v for v in values if v is not None and not np.isnan(v)]
+        
+        if len(values) < 2:
+            return None
+            
+        start_val = values[0]
+        end_val = values[-1]
+        years = len(values) - 1
+        
+        # CAGR 公式: (End / Start)^(1/n) - 1
+        # 注意：如果 Start 值為負數，CAGR 數學上無意義，返回 None
+        if start_val <= 0:
+            return None
+            
+        if end_val <= 0:
+            # 如果變為負數，說明大幅衰退，給一個負的增長率
+            return -0.20 # 假設衰退
+            
+        cagr = (end_val / start_val) ** (1 / years) - 1
+        return float(cagr)
+        
+    except Exception as e:
+        print(f"⚠️ [Growth Tool] CAGR Calculation failed: {e}")
+        return None
 
 def calculate_metrics(financials: dict, market_data: dict) -> dict:
     """
     執行純數學計算（雙軌 P/E 驗證）。
-    
-    Args:
-        financials: Dictionary with 'total_revenue' and 'net_income' (in millions)
-        market_data: Dictionary with 'price', 'market_cap', 'trailing_pe' (market_cap in absolute value)
-        
-    Returns:
-        dict: Calculated metrics with dual-track P/E analysis
     """
-    revenue = financials.get("total_revenue", 0)
-    net_income = financials.get("net_income", 0)
+    revenue_m = financials.get("total_revenue", 0)
+    net_income_m = financials.get("net_income", 0)
     market_cap = market_data.get("market_cap", 0)
+    price = market_data.get("price", 0)
     
-    # 1. 淨利率 (保持不變)
     margin = 0.0
-    if revenue > 0:
-        margin = (net_income / revenue) * 100
+    if revenue_m > 0:
+        margin = (net_income_m / revenue_m) * 100
     
-    # 2. [Dual Track] 計算 P/E
-    
-    # Track A: FY P/E (基於財報)
     pe_ratio_fy = 0.0
-    net_income_absolute = net_income * 1_000_000
+    net_income_absolute = net_income_m * 1_000_000
     if net_income_absolute > 0:
         pe_ratio_fy = market_cap / net_income_absolute
     
-    # Track B: TTM P/E (基於 Yahoo 實時數據)
     pe_ratio_ttm = market_data.get("trailing_pe")
     
-    # 3. [Insight] 趨勢分析
-    # 如果 TTM P/E 存在，優先用它做主要指標
     primary_pe = pe_ratio_ttm if pe_ratio_ttm else pe_ratio_fy
     
     trend_insight = "Stable"
     if pe_ratio_ttm and pe_ratio_fy > 0:
-        # 設置 5% 的誤差緩衝區
         diff_pct = (pe_ratio_ttm - pe_ratio_fy) / pe_ratio_fy
-        
         if diff_pct < -0.05:
-            # TTM P/E 更低 -> 分母(獲利)變大了 -> 成長信號
             trend_insight = f"Earnings Improving (TTM P/E {pe_ratio_ttm:.1f} < FY P/E {pe_ratio_fy:.1f})"
         elif diff_pct > 0.05:
-            # TTM P/E 更高 -> 分母(獲利)變小了 -> 衰退信號
             trend_insight = f"Earnings Declining (TTM P/E {pe_ratio_ttm:.1f} > FY P/E {pe_ratio_fy:.1f})"
-        else:
-            trend_insight = "Earnings Stable (TTM approx. equal to FY)"
-    elif not pe_ratio_ttm:
-        trend_insight = "TTM P/E unavailable, using FY P/E only"
     
-    # 4. 估值狀態判斷 (使用 Primary P/E)
     status = "Fair Value"
     if primary_pe > 0:
-        if primary_pe < 15:
-            status = "Undervalued"
-        elif primary_pe > 35:
-            status = "Overvalued"
+        if primary_pe < 15: status = "Undervalued"
+        elif primary_pe > 35: status = "Overvalued"
     
     return {
-        "market_cap": market_cap / 1_000_000,  # 轉為 million 方便顯示
-        "current_price": market_data["price"],
+        "market_cap": market_cap / 1_000_000,
+        "current_price": price,
         "net_profit_margin": round(margin, 2),
-        
-        # 返回所有 P/E 數據
         "pe_ratio": round(primary_pe, 2),
         "pe_ratio_ttm": round(pe_ratio_ttm, 2) if pe_ratio_ttm else None,
         "pe_ratio_fy": round(pe_ratio_fy, 2),
         "pe_trend_insight": trend_insight,
-        
         "valuation_status": status
     }
 
 
 def calculate_dcf(
-    free_cash_flow: float,
+    start_value: float,           # FCF 或 Net Income (絕對值)
     shares_outstanding: float,
+    total_debt: float,            # 絕對值
+    cash_and_equivalents: float,  # 絕對值
     growth_rate: float = 0.10,
     discount_rate: float = 0.10,
     terminal_growth: float = 0.03,
-    projection_years: int = 5
-) -> float:
+    projection_years: int = 10,
+    method: str = "FCF"           # "FCF" 或 "EPS"
+) -> dict:
     """
-    Core DCF Math Function.
-    
-    Input constraints: All currency/share values MUST be absolute numbers.
-    
-    Args:
-        free_cash_flow: 初始 FCF (OCF - CapEx) - 必須是絕對值 (e.g., 17,000,000,000)
-        shares_outstanding: 流通股數 - 必須是絕對值 (e.g., 900,000,000)
-        growth_rate: 前N年的預期增長率 (默認 10%，可動態調整)
-        discount_rate: 折現率 WACC (默認 10%)
-        terminal_growth: 永續增長率 (默認 3%)
-        projection_years: 預測年數 (默認 5年)
-    
-    Returns:
-        float: Intrinsic Value per Share (絕對值)
+    通用 DCF 模型 (支持 FCF-based 和 Earnings-based)。
     """
-    if shares_outstanding == 0:
-        return 0.0
+    if shares_outstanding == 0 or start_value is None:
+        return {"intrinsic_value": 0.0, "details": "Invalid Data"}
     
-    # 增加日誌，讓我們看到 Agent 到底用了多少增長率
-    print(f"🧮 [DCF Config] Growth Rate: {growth_rate:.1%}, Discount Rate: {discount_rate:.1%}")
+    print(f"🧮 [DCF-{method}] Base: ${start_value/1e9:.2f}B, Growth: {growth_rate:.1%}, Discount: {discount_rate:.1%}")
     
     # 1. 預測未來現金流 (Stage 1)
-    future_fcfs = []
+    future_flows = []
+    current_val = start_value
     for i in range(1, projection_years + 1):
-        fcf = free_cash_flow * ((1 + growth_rate) ** i)
-        future_fcfs.append(fcf)
+        current_val = current_val * (1 + growth_rate)
+        future_flows.append(current_val)
     
-    # 2. 計算終值 (Terminal Value, Stage 2)
-    last_fcf = future_fcfs[-1]
-    terminal_value = (last_fcf * (1 + terminal_growth)) / (discount_rate - terminal_growth)
+    # 2. 計算終值 (Terminal Value)
+    last_val = future_flows[-1]
+    terminal_value = (last_val * (1 + terminal_growth)) / (discount_rate - terminal_growth)
     
-    # 3. 折現回今天 (Present Value)
-    pv_fcfs = 0.0
-    for i, fcf in enumerate(future_fcfs):
-        pv_fcfs += fcf / ((1 + discount_rate) ** (i + 1))
+    # 3. 折現 (PV)
+    pv_flows = 0.0
+    for i, val in enumerate(future_flows):
+        pv_flows += val / ((1 + discount_rate) ** (i + 1))
     
     pv_terminal = terminal_value / ((1 + discount_rate) ** projection_years)
     
-    # 4. 總公司價值 (Enterprise Value 簡化版)
-    # [FIX] 這已經是絕對值了，不需要轉換
-    total_enterprise_value = pv_fcfs + pv_terminal
+    # 4. 計算折現總和 (Discounted Sum)
+    discounted_sum = pv_flows + pv_terminal
     
-    # 5. 每股價值 (絕對值 / 絕對值 = 股價)
-    # [FIX] 移除了 * 1,000,000，因為輸入已經是絕對值
-    intrinsic_value = total_enterprise_value / shares_outstanding
+    # 5. 根據方法處理債務
+    equity_value = 0.0
     
-    return intrinsic_value
+    if method.upper() == "FCF":
+        equity_value = discounted_sum - total_debt + cash_and_equivalents
+        note = "Adjusted for Net Debt"
+    else:
+        equity_value = discounted_sum 
+        note = "Direct Equity Value"
+    
+    # 6. 計算每股內在價值
+    intrinsic_value = equity_value / shares_outstanding
+    intrinsic_value = max(0.0, intrinsic_value)
+    
+    return {
+        "intrinsic_value": round(intrinsic_value, 2),
+        "discounted_sum": discounted_sum,
+        "equity_value": equity_value,
+        "method": method,
+        "note": note
+    }
