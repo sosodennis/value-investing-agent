@@ -8,6 +8,7 @@ based on the company's sector/industry. Currently defaults to GeneralDCFStrategy
 from src.state import AgentState
 from src.consts import ValuationStrategyType
 from src.nodes.calculator.strategies.general import GeneralDCFStrategy
+from src.nodes.calculator.strategies.reit_nav import ReitNAVStrategy
 
 
 def calculator_node(state: AgentState) -> dict:
@@ -49,9 +50,8 @@ def calculator_node(state: AgentState) -> dict:
         print(f"⚠️ [Strategy] {ValuationStrategyType.BANK_DDM.value} 尚未實現，回退到 general_dcf")
         strategy = GeneralDCFStrategy()
     elif strategy_code == ValuationStrategyType.REIT_NAV.value:
-        # TODO: 實現 ReitNAVStrategy
-        print(f"⚠️ [Strategy] {ValuationStrategyType.REIT_NAV.value} 尚未實現，回退到 general_dcf")
-        strategy = GeneralDCFStrategy()
+        print("🏗️ [Strategy] 激活 REITs 專屬策略 (ReitNAVStrategy)...")
+        strategy = ReitNAVStrategy()
     elif strategy_code == ValuationStrategyType.SAAS_RULE40.value:
         # TODO: 實現 SaaSRule40Strategy
         print(f"⚠️ [Strategy] {ValuationStrategyType.SAAS_RULE40.value} 尚未實現，回退到 general_dcf")

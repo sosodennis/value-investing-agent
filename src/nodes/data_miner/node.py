@@ -106,6 +106,15 @@ def data_miner_node(state: AgentState) -> dict:
         result = structured_llm.invoke(prompt)
         print(f"📊 提取成功: {result}")
         
+        # [Log] 檢查 REITs 數據是否提取成功
+        if current_strategy_id == ValuationStrategyType.REIT_NAV.value:
+            depr = result.depreciation_amortization
+            gains = result.gain_on_sale
+            print(f"🏗️ [Miner] REIT 數據提取檢查: Depr={depr}, Gains={gains}")
+            
+            if not depr:
+                print("⚠️ [Miner Warning] 未提取到折舊數據，FFO 計算可能不準確")
+        
         return {
             "financial_data": result,  # 返回 Pydantic 對象
             "sec_text_chunk": raw_text,  # 保存文本以備後用

@@ -18,7 +18,7 @@ def main():
     config = {"configurable": {"thread_id": "test_sprint2"}}
     
     # 使用真實股票代碼進行測試（確保有 10-K 的大公司）
-    ticker = "NET"  # 可以改為 TSLA, MSFT, GOOGL 等
+    ticker = "O"  # 可以改為 TSLA, MSFT, GOOGL 等
     print(f"\n📊 開始分析流程 - Ticker: {ticker}...")
     for event in app.stream({"ticker": ticker}, config=config):
         for node_name, node_output in event.items():
