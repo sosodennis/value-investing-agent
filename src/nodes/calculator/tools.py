@@ -2,7 +2,7 @@
 Node B: Calculator - Private Tools (Enterprise Grade)
 
 This module contains financial calculation utilities:
-1. Market data fetching (yfinance) - Enhanced with Sector, Interest Coverage, TBV, Robust Risk-Free Rate, ROE/Payout
+1. Market data fetching (yfinance) - Enhanced with Sector, Interest Coverage, TBV, Robust Risk-Free Rate, ROE/Payout, SBC
 2. Valuation ratio calculations
 3. Intrinsic Value Calculation (Enterprise DCF with Growth Decay)
 4. Historical Growth Calculation (Smart Normalized Logic)
@@ -16,7 +16,7 @@ import numpy as np
 
 def get_market_data(ticker: str):
     """
-    獲取全面的市場與財務數據，新增 Sector, Interest Coverage, ROE, Payout Ratio。
+    獲取全面的市場與財務數據，新增 Sector, Interest Coverage, ROE, Payout Ratio, Stock Based Compensation.
     包含針對 Risk Free Rate 的穩健獲取邏輯。
     """
     try:
@@ -102,14 +102,28 @@ def get_market_data(ticker: str):
         # --- 3. Cash Flow ---
         cf = stock.cashflow
         fcf_ttm = None
+        stock_based_compensation = 0.0 # [New] 初始化 SBC
+        
         if not cf.empty:
             latest_cf_date = cf.columns[0]
+            
+            # FCF Calculation
             if 'Free Cash Flow' in cf.index:
                 fcf_ttm = float(cf.loc['Free Cash Flow', latest_cf_date])
             elif 'Operating Cash Flow' in cf.index and 'Capital Expenditure' in cf.index:
                 ocf = cf.loc['Operating Cash Flow', latest_cf_date]
                 capex = cf.loc['Capital Expenditure', latest_cf_date]
                 fcf_ttm = float(ocf + capex)
+                
+            # [New] 獲取股權獎勵支出 (SBC)
+            # yfinance 的鍵值可能會有變化，多試幾個常見名稱
+            for key in ['Stock Based Compensation', 'Share Based Compensation', 'Issuance Of Stock', 'StockBasedCompensation']:
+                if key in cf.index:
+                    val = cf.loc[key, latest_cf_date]
+                    if val is not None:
+                        # SBC 在現金流量表 (CFO) 中通常是正數 (加回項)，我們需要正值來進行後續計算
+                        stock_based_compensation = abs(float(val))
+                    break
 
         if fcf_ttm is None: fcf_ttm = info.get("freeCashflow")
 
@@ -123,13 +137,12 @@ def get_market_data(ticker: str):
         except Exception as e:
             print(f"⚠️ [Risk Tool] Failed to fetch ^TNX, using default {risk_free_rate:.1%}: {e}")
 
-        # --- 5. [New] SGR Metrics ---
+        # --- 5. SGR Metrics ---
         roe = info.get("returnOnEquity")
         payout_ratio = info.get("payoutRatio")
         
-        # Fallback for Payout Ratio if ROE is positive
         if payout_ratio is None and roe and roe > 0:
-            payout_ratio = 0.0 # Assume full retention if unknown
+            payout_ratio = 0.0 
 
         return {
             "price": current_price,
@@ -147,8 +160,9 @@ def get_market_data(ticker: str):
             "sector": sector,               
             "industry": industry,           
             "interest_coverage": interest_coverage,
-            "roe": roe,                     # [New]
-            "payout_ratio": payout_ratio    # [New]
+            "roe": roe,                     
+            "payout_ratio": payout_ratio,
+            "stock_based_compensation": stock_based_compensation # [New]
         }
     except Exception as e:
         print(f"❌ [Calculator Tool] yfinance error: {e}")
@@ -184,7 +198,6 @@ def calculate_historical_growth(ticker: str) -> float:
         
         if fin_df.empty or len(fin_df.columns) < 2: return None
         
-        # --- 關鍵修改：嚴格優先使用 Normalized Income ---
         target_row = None
         if 'Normalized Income' in fin_df.index:
             target_row = 'Normalized Income'
@@ -195,11 +208,9 @@ def calculate_historical_growth(ticker: str) -> float:
             
         if not target_row: return None
             
-        # 獲取數據 (從舊到新)
         values = fin_df.loc[target_row].values[::-1]
         values = [v for v in values if v is not None and not np.isnan(v)]
         
-        # 至少要有4年數據才準
         if len(values) < 4: return None
             
         start_val = values[0]
@@ -270,27 +281,23 @@ def calculate_dcf(
     if shares_outstanding == 0 or start_value is None:
         return {"intrinsic_value": 0.0, "details": "Invalid Data"}
     
-    print(f"🧮 [DCF-{method}] Base:${start_value/1e9:.2f}B, Initial Growth:{growth_rate:.1%}, Discount:{discount_rate:.1%}")
+    # print(f"🧮 [DCF-{method}] Base:${start_value/1e9:.2f}B, Initial Growth:{growth_rate:.1%}, Discount:{discount_rate:.1%}")
     
     # 1. 預測現金流 (含 Fade 邏輯)
     future_flows = []
     current_val = start_value
     current_growth = growth_rate
     
-    # 計算每年的衰減量
     decay_step = 0.0
     if projection_years > fade_start_year:
-        # 目標：在第 10 年結束時，增長率接近 terminal_growth
         decay_step = (growth_rate - terminal_growth) / (projection_years - fade_start_year + 1)
 
     for year in range(1, projection_years + 1):
         if year > fade_start_year:
-            # 確保不會低於 terminal_growth
             current_growth = max(terminal_growth, current_growth - decay_step)
         
         current_val = current_val * (1 + current_growth)
         
-        # 折現因子
         discount_factor = (1 + discount_rate) ** year
         pv = current_val / discount_factor
         
@@ -306,11 +313,9 @@ def calculate_dcf(
     # 2. 終值計算 (Terminal Value)
     last_val = future_flows[-1]["val"]
     
-    # 安全檢查：WACC 必須 > Terminal Growth
     final_discount_rate = discount_rate
     if final_discount_rate <= terminal_growth:
         final_discount_rate = terminal_growth + 0.02
-        print(f"⚠️ [DCF Adj] Discount rate too low, adjusted to {final_discount_rate:.1%} for TV calc")
         
     terminal_value = (last_val * (1 + terminal_growth)) / (final_discount_rate - terminal_growth)
     pv_terminal = terminal_value / ((1 + discount_rate) ** projection_years)
@@ -320,7 +325,7 @@ def calculate_dcf(
     
     # 4. 根據方法處理債務
     equity_value = 0.0
-    if method.upper() == "FCF":
+    if "FCF" in method.upper(): # Supports "FCF (Cons)" and "FCF (Street)"
         equity_value = discounted_sum - total_debt + cash_and_equivalents
         note = "Adjusted for Net Debt"
     else:
@@ -329,7 +334,6 @@ def calculate_dcf(
     
     intrinsic_value = max(0.0, equity_value / shares_outstanding)
     
-    # 計算終值集中度
     tv_concentration = 0.0
     if discounted_sum > 0:
         tv_concentration = pv_terminal / discounted_sum

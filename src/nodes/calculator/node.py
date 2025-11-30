@@ -8,6 +8,7 @@ Features:
 - GuruFocus-style Growth Capping.
 - Smart Hybrid Growth Strategy with SGR (Sustainable Growth Rate) backup.
 - Adjusted Beta (Blume's + Mega-Cap Cap) for realistic discount rates.
+- Dual-Scenario Analysis (Conservative vs. Street) handling SBC.
 """
 
 import math
@@ -39,28 +40,21 @@ def calculator_node(state: AgentState) -> dict:
     # 3. 準備 DCF 參數
     
     # (A) 增長率 (Smart Hybrid Logic with SGR Backup)
-    # 策略優先級: 1. Analyst Consensus (PEG) -> 2. Internal Engine (SGR) -> 3. Historical Data
-    
     raw_growth_rate = 0.10 # Default
     growth_source = "Default"
     
-    # 3.1 準備所有數據源
     hist_growth = calculate_historical_growth(state["ticker"])
     
-    # 計算 SGR (Sustainable Growth Rate)
     sgr_growth = None
     roe = market_data.get("roe")
     payout = market_data.get("payout_ratio")
     
     if roe is not None:
-        # 如果 payout 缺失，保守假設不發股息 (Retention = 1.0) 或者使用 0.0
         retention = 1 - (payout if payout else 0.0)
         calculated_sgr = roe * retention
-        # SGR 範圍限制 (避免 ROE 極高導致數據爆炸，例如 AAPL 回購導致 Equity 很小)
         if 0.02 < calculated_sgr < 0.25: 
             sgr_growth = calculated_sgr
     
-    # 計算 PEG Implied Growth
     pe_ratio = metrics_dict.get('pe_ratio', 0)
     peg = market_data.get('peg_ratio')
     peg_growth = None
@@ -72,40 +66,28 @@ def calculator_node(state: AgentState) -> dict:
             
     print(f"🔍 [Debug] Sources -> Hist: {hist_growth if hist_growth else 'N/A'} | PEG: {peg_growth if peg_growth else 'N/A'} | SGR: {sgr_growth if sgr_growth else 'N/A'}")
 
-    # 3.2 決策樹 (Decision Tree)
-    
-    # 情境 1: 有 PEG 數據 (最理想，代表市場共識)
     if peg_growth is not None:
-        # 檢查是否過度樂觀 (與 SGR 嚴重衝突)
         if sgr_growth and peg_growth > sgr_growth * 1.5:
              raw_growth_rate = (peg_growth + sgr_growth) / 2
              growth_source = "Blended (PEG & SGR - PEG too optimistic)"
         else:
              raw_growth_rate = peg_growth
              growth_source = "Analyst Consensus (PEG)"
-    
-    # 情境 2: PEG 缺失，但有 SGR (UNH 救星，內生增長)
     elif sgr_growth is not None:
-        # 如果歷史數據很差 (UNH case) 或缺失，SGR 是最佳估計
         if hist_growth is None or hist_growth < 0.05:
             raw_growth_rate = sgr_growth
             growth_source = f"Sustainable Growth (ROE {roe:.1%} * Retention)"
         else:
-            # 歷史數據不錯，SGR 也不錯 -> 取平均以平滑
             raw_growth_rate = (sgr_growth + hist_growth) / 2
             growth_source = "Blended (SGR & Hist)"
-            
-    # 情境 3: 只有歷史數據 (Fallback)
     elif hist_growth is not None:
-        # High P/E check
         if pe_ratio > 25 and hist_growth < 0.08:
-             raw_growth_rate = 0.12 # High PE implies higher future growth
+             raw_growth_rate = 0.12 
              growth_source = "Market Implied (High P/E Fix)"
         else:
             raw_growth_rate = hist_growth
             growth_source = "Historical CAGR"
     
-    # 5-20% Cap (GuruFocus Rule)
     final_growth_rate = raw_growth_rate
     cap_msg = ""
     if raw_growth_rate > 0.20:
@@ -117,37 +99,25 @@ def calculator_node(state: AgentState) -> dict:
     
     print(f"📊 [Growth] {final_growth_rate:.2%} {cap_msg} based on {growth_source}")
 
-    # (B) 折現率 (含 Beta 調整與 Spread 邏輯)
+    # (B) 折現率 (含 Adjusted Beta)
     rf = market_data.get('risk_free_rate', 0.042)
     raw_beta = market_data.get('beta') if market_data.get('beta') else 1.0
     
-    # [Enterprise Grade Fix] Beta 收斂調整 (Blume's Adjustment + Mega-Cap Cap)
-    # 針對 NVDA 等超大市值高波動成長股，原始 Beta 會導致極其嚴苛的折現率
-    market_cap_b = market_data.get('market_cap', 0) / 1_000_000_000 # Billion
-    
-    # 1. Blume's Adjustment: 將 Beta 向 1.0 拉近 (長期均值回歸)
-    # Adjusted Beta = (0.67 * Raw Beta) + (0.33 * 1.0)
+    market_cap_b = market_data.get('market_cap', 0) / 1_000_000_000 
     adj_beta = (0.67 * raw_beta) + 0.33
-    
-    # 2. Mega-Cap Capping: 3兆美元俱樂部的公司，系統性風險不應被視為市場的2倍以上
     beta_note = "Blume's Adj"
-    if market_cap_b > 200: # 定義 Mega Cap 為 >200B
+    if market_cap_b > 200: 
         if adj_beta > 1.50:
             adj_beta = 1.50
             beta_note += " + Mega-Cap Cap(1.5)"
     
     print(f"⚖️ [Risk Adj] Raw Beta: {raw_beta:.2f} -> Adj Beta: {adj_beta:.2f} ({beta_note})")
     
-    # Cost of Equity (Earnings Model)
     market_premium = 0.06 
-    # 使用調整後的 Beta 計算 CAPM
     cost_of_equity = rf + (adj_beta * market_premium)
-    
-    # Hurdle Rate Floor (GuruFocus Logic)
     ke_floor = (math.ceil(rf * 100) / 100) + 0.055
     final_ke = max(cost_of_equity, ke_floor)
     
-    # WACC (FCF Model)
     int_cov = market_data.get('interest_coverage')
     base_spread = 0.015
     if int_cov is not None:
@@ -167,21 +137,101 @@ def calculator_node(state: AgentState) -> dict:
         we = mv_equity / total_val
         wd = mv_debt / total_val
         raw_wacc = (we * final_ke) + (wd * cost_of_debt * (1 - tax_rate))
-        # WACC 通常低於 Ke，但也設一個絕對地板
         final_wacc = max(raw_wacc, rf + 0.02)
 
     print(f"⚖️ [Discount] WACC: {final_wacc:.1%} | Ke: {final_ke:.1%} (Floor: {ke_floor:.1%})")
 
-    # (C) Base Values
+    # (C) Base Values & Scenario Analysis
     shares = float(market_data.get('shares_outstanding', 0))
+    cash_eq = market_data.get('cash_and_equivalents', 0.0)
+    sbc = market_data.get('stock_based_compensation', 0.0)
     
-    # FCF Base
-    fcf_base = 0.0
-    ttm_fcf = market_data.get("fcf_ttm")
-    if ttm_fcf and ttm_fcf > 0: fcf_base = float(ttm_fcf)
-    else: fcf_base = (financial_obj.operating_cash_flow - abs(financial_obj.capital_expenditures)) * 1_000_000
+    # 原始數據
+    # Note: financial_obj.net_income is usually GAAP.
+    raw_net_income = financial_obj.net_income * 1_000_000
     
-    # Earnings Base
+    # 獲取 TTM FCF (這是 "Street" FCF, 因為 OCF 已經加回了 SBC)
+    ttm_fcf_street = 0.0
+    y_fcf = market_data.get("fcf_ttm")
+    if y_fcf and y_fcf > 0:
+        ttm_fcf_street = float(y_fcf)
+    else:
+        # Fallback to FY data (OCF - Capex)
+        # OCF 裡通常包含了加回的 SBC
+        ttm_fcf_street = (financial_obj.operating_cash_flow - abs(financial_obj.capital_expenditures)) * 1_000_000
+
+    # --- 定義兩種情境 ---
+    
+    # Scenario A: Conservative (GAAP / Realist)
+    # 觀點：SBC 是真實成本。如果要防止股權稀釋，公司必須花現金回購股票。
+    # 因此，從 FCF 中扣除 SBC。EPS 使用 GAAP Net Income。
+    base_eps_cons = raw_net_income
+    base_fcf_cons = ttm_fcf_street - sbc 
+    if base_fcf_cons < 0: base_fcf_cons = 0 # 避免負值導致模型崩潰，或保留負值表示風險
+    
+    # Scenario B: Street / Aggressive (Non-GAAP)
+    # 觀點：SBC 是非現金支出。分析師通常使用 Non-GAAP EPS (Net Income + SBC + Amortization etc)。
+    # FCF 使用標準定義 (OCF - Capex)。
+    base_eps_street = raw_net_income + sbc
+    base_fcf_street = ttm_fcf_street 
+
+    print(f"\n🎭 [Scenario Analysis] SBC Impact: ${sbc/1e9:.2f}B")
+    print(f"   • Conservative Base (GAAP): EPS=${base_eps_cons/1e9:.2f}B | FCF=${base_fcf_cons/1e9:.2f}B (FCF - SBC)")
+    print(f"   • Street Base (Add-back SBC):  EPS=${base_eps_street/1e9:.2f}B | FCF=${base_fcf_street/1e9:.2f}B")
+
+    # 4. 執行雙軌計算 (Dual Track x 2 Scenarios)
+    
+    # --- Run Conservative ---
+    dcf_fcf_cons = calculate_dcf(base_fcf_cons, shares, mv_debt, cash_eq, final_growth_rate, final_wacc, method="FCF (Cons)")
+    dcf_eps_cons = calculate_dcf(base_eps_cons, shares, 0, 0, final_growth_rate, final_ke, method="EPS (Cons)")
+    val_cons = 0.0
+    
+    # --- Run Street ---
+    dcf_fcf_street = calculate_dcf(base_fcf_street, shares, mv_debt, cash_eq, final_growth_rate, final_wacc, method="FCF (Street)")
+    dcf_eps_street = calculate_dcf(base_eps_street, shares, 0, 0, final_growth_rate, final_ke, method="EPS (Street)")
+    val_street = 0.0
+
+    # 5. 智能決策邏輯 (Sector-Aware + Scenario)
+    # 先決定每個 Scenario 內部的取值 (FCF vs EPS)
+    
+    def select_val_in_scenario(v_fcf, v_eps, sect):
+        if "Financial" in sect or "Bank" in sect or "Insurance" in sect:
+            return v_eps
+        elif "Real Estate" in sect:
+            return v_fcf
+        else:
+            # 通用邏輯：平均或保守
+            if v_fcf > 0 and v_eps > 0:
+                return (v_fcf + v_eps) / 2
+            elif v_eps > 0: return v_eps
+            elif v_fcf > 0: return v_fcf
+            return 0.0
+
+    val_cons = select_val_in_scenario(dcf_fcf_cons['intrinsic_value'], dcf_eps_cons['intrinsic_value'], sector)
+    val_street = select_val_in_scenario(dcf_fcf_street['intrinsic_value'], dcf_eps_street['intrinsic_value'], sector)
+    
+    curr_price = market_data['price']
+    
+    print(f"\n🆚 [Valuation Range]")
+    print(f"   🛡️ Conservative Value (SBC Expensed): ${val_cons:.2f} (Upside: {((val_cons-curr_price)/curr_price)*100:.1f}%)")
+    print(f"   🚀 Street Value (SBC Ignored):        ${val_street:.2f} (Upside: {((val_street-curr_price)/curr_price)*100:.1f}%)")
+    
+    # 最終決策：依然以保守值為主要輸出 (Enterprise Grade 的堅持)，但在 Metrics 中記錄樂觀值
+    final_val = val_cons 
+    reason = "Conservative (GAAP based)"
+    
+    # 如果保守值太低，但市場價格接近 Street Value，可以在 Reason 中備註
+    if final_val < curr_price and val_street > curr_price:
+        reason += " [Market pricing in Street/Non-GAAP Scenario]"
+
+    upside = ((final_val - curr_price) / curr_price) * 100
+    print(f"💎 [Final Decision] ${final_val:.2f} ({reason})")
+
+    metrics_dict['dcf_value'] = round(final_val, 2)
+    metrics_dict['dcf_value_bull'] = round(val_street, 2) # [New] 存入樂觀估值
+    metrics_dict['dcf_upside'] = round(upside, 2)
+    
+    # [Restored Logic] Calculate Earnings Base for Metrics population
     earnings_base = 0.0
     is_normalized = False
     if nri_data and nri_data.get('normalized_income'):
@@ -190,59 +240,6 @@ def calculator_node(state: AgentState) -> dict:
     else:
         earnings_base = financial_obj.net_income * 1_000_000
 
-    # 4. 執行計算 (含 Linear Fade)
-    dcf_fcf = calculate_dcf(fcf_base, shares, mv_debt, market_data.get('cash_and_equivalents',0), final_growth_rate, final_wacc, method="FCF")
-    dcf_eps = calculate_dcf(earnings_base, shares, 0, 0, final_growth_rate, final_ke, method="EPS")
-    
-    val_fcf = dcf_fcf['intrinsic_value']
-    val_eps = dcf_eps['intrinsic_value']
-    curr_price = market_data['price']
-    
-    # 5. 智能決策邏輯 (Sector-Aware)
-    print(f"\n🆚 [Valuation Logic]")
-    print(f"   1. FCF Model (${val_fcf:.2f}): TV Concentration {dcf_fcf['tv_concentration']:.0%}")
-    print(f"   2. EPS Model (${val_eps:.2f}): TV Concentration {dcf_eps['tv_concentration']:.0%}")
-    
-    final_val = 0.0
-    reason = ""
-    
-    # 行業特殊規則
-    if "Financial" in sector or "Bank" in sector or "Insurance" in sector:
-        final_val = val_eps
-        reason = f"Sector ({sector}) requires Earnings Model"
-    elif "Real Estate" in sector:
-        final_val = val_fcf
-        reason = f"Sector ({sector}) prefers Cash Flow Model"
-    else:
-        # 通用邏輯：保守原則
-        if fcf_base > 0 and earnings_base > 0:
-            if val_fcf > 2 * val_eps:
-                final_val = val_eps
-                reason = "Conservative (FCF > 2x EPS)"
-            elif val_eps > 2 * val_fcf:
-                final_val = val_fcf
-                reason = "Conservative (EPS > 2x FCF)"
-            else:
-                final_val = (val_fcf + val_eps) / 2
-                reason = "Average of Dual Tracks"
-        elif earnings_base > 0:
-            final_val = val_eps
-            reason = "Earnings Model (FCF Invalid)"
-        else:
-            final_val = val_fcf
-            reason = "FCF Model (Earnings Invalid)"
-            
-    # Sanity Check on TV Concentration
-    selected_dcf_res = dcf_eps if final_val == val_eps else dcf_fcf
-    if selected_dcf_res['tv_concentration'] > 0.75:
-        reason += " [⚠️ High Risk: >75% Value from TV]"
-
-    upside = ((final_val - curr_price) / curr_price) * 100
-    print(f"💎 [Final Decision] ${final_val:.2f} ({reason})")
-
-    metrics_dict['dcf_value'] = round(final_val, 2)
-    metrics_dict['dcf_upside'] = round(upside, 2)
-    
     eps_val = earnings_base / shares if shares > 0 else 0.0
     metrics_dict['eps_ttm'] = round(eps_val, 2)
     metrics_dict['eps_normalized'] = round(eps_val, 2) if is_normalized else None
