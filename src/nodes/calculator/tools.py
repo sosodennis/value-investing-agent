@@ -17,6 +17,7 @@ def get_market_data_raw(ticker: str):
     """
     try:
         stock = yf.Ticker(ticker)
+        # Fetch 5 days to handle weekends/holidays
         hist = stock.history(period="5d")
         if hist.empty: return None
         
@@ -68,7 +69,7 @@ def get_market_data_raw(ticker: str):
                     if val is not None: sbc = abs(float(val))
                     break
         
-        # 4. Risk Free Rate
+        # 4. Risk Free Rate (Robust)
         rf = 0.042 # Default
         try:
             tnx = yf.Ticker("^TNX").history(period="5d")
@@ -144,16 +145,16 @@ def calculate_historical_growth(ticker: str) -> float:
 def calculate_dcf(
     start_value: float,
     shares_outstanding: float,
-    net_debt: float, # 改為直接傳入 Net Debt
+    net_debt: float,
     growth_rate: float,
     discount_rate: float,
     terminal_growth: float = 0.025,
     projection_years: int = 10,
     fade_start_year: int = 5,
-    exit_multiple: float = None, 
+    exit_multiple: float = None, # [New] 接收退出倍數
     method: str = "FCF") -> dict:
     """
-    純數學引擎：只負責算 DCF，不負責決定參數。
+    純數學引擎：計算 DCF，包含 Linear Fade Growth 和 Dual Terminal Value。
     """
     if shares_outstanding == 0 or start_value is None:
         return {"intrinsic_value": 0.0}
@@ -177,24 +178,40 @@ def calculate_dcf(
     
     pv_explicit = sum(f["pv"] for f in future_flows)
     
-    # 2. Terminal Value (目前僅 Gordon)
+    # 2. Terminal Value (Dual Method)
     last_val = future_flows[-1]["val"]
     
+    # Method A: Gordon Growth
     final_disc = max(discount_rate, terminal_growth + 0.01) # Math safety
     tv_gordon = (last_val * (1 + terminal_growth)) / (final_disc - terminal_growth)
-    pv_terminal = tv_gordon / ((1 + discount_rate) ** projection_years)
     
-    # 3. Sum
+    # Method B: Exit Multiple
+    tv_exit = tv_gordon # Default fallback
+    use_dual = False
+    
+    if exit_multiple is not None:
+        tv_exit = last_val * exit_multiple
+        use_dual = True
+        
+    # 取平均 (Blended TV)
+    terminal_value_raw = (tv_gordon + tv_exit) / 2 if use_dual else tv_gordon
+    
+    pv_terminal = terminal_value_raw / ((1 + discount_rate) ** projection_years)
+    
+    # 3. Sum & Equity Value
     enterprise_value = pv_explicit + pv_terminal
-    
-    # 4. Equity Value
     equity_value = enterprise_value - net_debt # Net Debt 可為正或負
     intrinsic_value = max(0, equity_value / shares_outstanding)
+    
+    # Debug note
+    tv_note = f"Gordon=${tv_gordon/1e9:.1f}B"
+    if use_dual:
+        tv_note = f"Avg(Gordon=${tv_gordon/1e9:.1f}B, Exit={exit_multiple:.1f}x=${tv_exit/1e9:.1f}B)"
     
     tv_conc = pv_terminal / (pv_explicit + pv_terminal) if (pv_explicit + pv_terminal) > 0 else 0
     
     return {
         "intrinsic_value": round(intrinsic_value, 2),
         "tv_concentration": round(tv_conc, 2),
-        "note": method
+        "note": f"{method} | TV: {tv_note}"
     }

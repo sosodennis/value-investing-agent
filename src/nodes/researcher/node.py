@@ -60,7 +60,7 @@ def researcher_node(state: AgentState) -> dict:
     
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",
+            model="gemini-2.5-flash-lite",
             temperature=0.3  # 稍微增加一點創造力以進行總結
         )
         

@@ -55,7 +55,7 @@ def data_miner_node(state: AgentState) -> dict:
     try:
         # 初始化模型 (確保 .env 有 GOOGLE_API_KEY)
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",
+            model="gemini-2.5-flash-lite",
             temperature=0
         )
         

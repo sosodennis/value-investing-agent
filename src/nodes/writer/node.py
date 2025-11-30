@@ -60,7 +60,7 @@ def writer_node(state: AgentState) -> dict:
         # 寫作建議使用 Gemini Pro (如果可用) 以獲得更好的文筆
         # 如果沒有 Pro 權限，改回 gemini-2.0-flash-lite
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",
+            model="gemini-2.5-flash-lite",
             temperature=0.7  # 增加創造力，讓文章更自然
         )
         
