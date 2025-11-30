@@ -12,6 +12,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from src.state import AgentState
 from src.models.financial import FinancialStatements
 from src.nodes.data_miner.tools import fetch_10k_text
+from src.strategies.registry import StrategyRegistry
+from src.consts import ValuationStrategyType
 
 
 def data_miner_node(state: AgentState) -> dict:
@@ -53,6 +55,13 @@ def data_miner_node(state: AgentState) -> dict:
     print("🤖 調用 Gemini 進行提取...")
     
     try:
+        # [Refactor] 獲取當前策略的數據提取指令
+        current_strategy_id = state.get("valuation_strategy", ValuationStrategyType.GENERAL_DCF.value)
+        strategy_config = StrategyRegistry.get_strategy(current_strategy_id)
+        extraction_instruction = strategy_config.data_extraction_prompt
+        
+        print(f"📋 [Miner] 使用策略: {strategy_config.name} ({current_strategy_id})")
+        
         # 初始化模型 (確保 .env 有 GOOGLE_API_KEY)
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash-lite",
@@ -68,7 +77,9 @@ def data_miner_node(state: AgentState) -> dict:
         prompt = f"""
 你是一位專業的財務會計。請閱讀以下 SEC 10-K 財報片段，並提取關鍵財務數據。
 
-要求：
+{extraction_instruction}
+
+【通用要求】
 1. 提取最新財年的 Revenue 和 Net Income。
 
 2. 【重要】尋找「Consolidated Statements of Cash Flows」(現金流量表)。
@@ -89,8 +100,6 @@ def data_miner_node(state: AgentState) -> dict:
 財報文本片段:
 
 {text_snippet}
-
-... (內容過長省略)
 """
         
         # 執行推理

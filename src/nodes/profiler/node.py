@@ -12,7 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 from src.state import AgentState
 from src.consts import ValuationStrategyType
-from src.nodes.profiler.prompts import STRATEGY_DEFINITIONS
+from src.strategies.registry import StrategyRegistry
 
 
 class StrategyDecision(BaseModel):
@@ -96,6 +96,9 @@ def profiler_node(state: AgentState) -> dict:
         # 2. 調用 LLM 進行語義路由
         print(f"🤖 [Router] 調用 Gemini 判斷最佳估值模型...")
         
+        # [Refactor] 動態獲取最新的策略定義
+        strategy_definitions_str = StrategyRegistry.get_all_prompts_for_profiler()
+        
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0)
         structured_llm = llm.with_structured_output(StrategyDecision)
         
@@ -104,7 +107,7 @@ def profiler_node(state: AgentState) -> dict:
 
 【策略知識庫】
 
-{STRATEGY_DEFINITIONS}
+{strategy_definitions_str}
 
 【目標公司信息】
 
