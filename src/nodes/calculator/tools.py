@@ -1,175 +1,104 @@
 """
-Node B: Calculator - Private Tools (Enterprise Grade)
+Node B: Calculator - Private Tools (Refactored / Enterprise Grade)
 
-This module contains financial calculation utilities:
-1. Market data fetching (yfinance) - Enhanced with Sector, Interest Coverage, TBV, Robust Risk-Free Rate, ROE/Payout, SBC
-2. Valuation ratio calculations
-3. Intrinsic Value Calculation (Enterprise DCF with Growth Decay)
-4. Historical Growth Calculation (Smart Normalized Logic)
-
-All calculations are pure Python.
+Responsibilities:
+1. Fetch raw market data (yfinance) without subjective logic.
+2. Extract financial data.
+3. Perform pure mathematical projections (DCF core).
 """
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
 
-def get_market_data(ticker: str):
+def get_market_data_raw(ticker: str):
     """
-    獲取全面的市場與財務數據，新增 Sector, Interest Coverage, ROE, Payout Ratio, Stock Based Compensation.
-    包含針對 Risk Free Rate 的穩健獲取邏輯。
+    [Fetcher] 只負責從 yfinance 搬運原始數據，不做主觀判斷。
     """
     try:
         stock = yf.Ticker(ticker)
-        
-        # --- 1. 基礎數據 ---
-        hist = stock.history(period="1d")
-        if hist.empty:
-            raise ValueError(f"無法獲取 {ticker} 的股價數據")
+        hist = stock.history(period="5d")
+        if hist.empty: return None
         
         current_price = float(hist["Close"].iloc[-1])
         info = stock.info
+        bs = stock.balance_sheet
+        is_stmt = stock.financials
+        cf = stock.cashflow
         
+        # 基礎數據提取
         shares = info.get("sharesOutstanding")
         market_cap = info.get("marketCap")
         if not shares and market_cap: shares = market_cap / current_price
         if not market_cap and shares: market_cap = current_price * shares
-
-        # [New] 獲取行業資訊
-        sector = info.get("sector", "Unknown")
-        industry = info.get("industry", "Unknown")
-
-        # --- 2. 財務數據 (BS & IS) ---
-        bs = stock.balance_sheet
-        income_stmt = stock.financials
         
+        # 提取財務報表最新日期
+        bs_date = bs.columns[0] if not bs.empty else None
+        is_date = is_stmt.columns[0] if not is_stmt.empty else None
+        cf_date = cf.columns[0] if not cf.empty else None
+
+        # 提取原始數值 (Raw Values)
+        # 1. Debt & Cash
         total_debt = 0.0
-        cash_and_equivalents = 0.0
-        tangible_book_value = 0.0
-        interest_coverage = None 
-        
-        latest_date = None
-        
-        # Balance Sheet Data
-        if not bs.empty:
-            latest_date = bs.columns[0]
-            # 債務與現金
-            for key in ['Total Debt', 'Total Liab', 'Long Term Debt']:
-                if key in bs.index:
-                    total_debt = float(bs.loc[key, latest_date])
-                    break
-            for key in ['Cash And Cash Equivalents', 'Cash Cash Equivalents And Short Term Investments']:
-                if key in bs.index:
-                    cash_and_equivalents = float(bs.loc[key, latest_date])
-                    break
-            # TBV
-            if 'Tangible Book Value' in bs.index:
-                tangible_book_value = float(bs.loc['Tangible Book Value', latest_date])
-            elif 'Total Assets' in bs.index and 'Total Liab' in bs.index:
-                assets = bs.loc['Total Assets', latest_date]
-                liabs = bs.loc['Total Liab', latest_date]
-                intangibles = bs.loc['Intangible Assets', latest_date] if 'Intangible Assets' in bs.index else 0
-                goodwill = bs.loc['Goodwill', latest_date] if 'Goodwill' in bs.index else 0
-                tangible_book_value = float(assets - liabs - intangibles - goodwill)
-
-        # Income Statement Data for Interest Coverage
-        if not income_stmt.empty:
-            is_date = income_stmt.columns[0]
-            try:
-                # 獲取 EBIT
-                ebit = 0.0
-                if 'EBIT' in income_stmt.index:
-                    ebit = float(income_stmt.loc['EBIT', is_date])
-                elif 'Operating Income' in income_stmt.index:
-                    ebit = float(income_stmt.loc['Operating Income', is_date])
-                
-                # 獲取利息支出 (通常是負數，取絕對值)
-                interest_expense = 0.0
-                if 'Interest Expense' in income_stmt.index:
-                    interest_expense = abs(float(income_stmt.loc['Interest Expense', is_date]))
-                elif 'Interest Expense Non Operating' in income_stmt.index:
-                    interest_expense = abs(float(income_stmt.loc['Interest Expense Non Operating', is_date]))
-                
-                # 計算覆蓋率
-                if interest_expense > 0:
-                    interest_coverage = ebit / interest_expense
-                else:
-                    interest_coverage = 100.0 # 無債務或無利息，視為極其安全
-                    
-            except Exception as e:
-                print(f"⚠️ [Data Tool] Interest Coverage calc failed: {e}")
-
-        # --- 3. Cash Flow ---
-        cf = stock.cashflow
-        fcf_ttm = None
-        stock_based_compensation = 0.0 # [New] 初始化 SBC
-        
-        if not cf.empty:
-            latest_cf_date = cf.columns[0]
+        cash_eq = 0.0
+        if bs_date:
+            total_debt = float(bs.loc['Total Debt', bs_date]) if 'Total Debt' in bs.index else 0.0
+            cash_eq = float(bs.loc['Cash And Cash Equivalents', bs_date]) if 'Cash And Cash Equivalents' in bs.index else 0.0
             
-            # FCF Calculation
-            if 'Free Cash Flow' in cf.index:
-                fcf_ttm = float(cf.loc['Free Cash Flow', latest_cf_date])
-            elif 'Operating Cash Flow' in cf.index and 'Capital Expenditure' in cf.index:
-                ocf = cf.loc['Operating Cash Flow', latest_cf_date]
-                capex = cf.loc['Capital Expenditure', latest_cf_date]
-                fcf_ttm = float(ocf + capex)
-                
-            # [New] 獲取股權獎勵支出 (SBC)
-            # yfinance 的鍵值可能會有變化，多試幾個常見名稱
-            for key in ['Stock Based Compensation', 'Share Based Compensation', 'Issuance Of Stock', 'StockBasedCompensation']:
+        # 2. EBIT & Interest (For Coverage)
+        ebit = 0.0
+        interest_expense = 0.0
+        if is_date:
+            if 'EBIT' in is_stmt.index: ebit = float(is_stmt.loc['EBIT', is_date])
+            elif 'Operating Income' in is_stmt.index: ebit = float(is_stmt.loc['Operating Income', is_date])
+            
+            if 'Interest Expense' in is_stmt.index: 
+                interest_expense = abs(float(is_stmt.loc['Interest Expense', is_date]))
+            elif 'Interest Expense Non Operating' in is_stmt.index:
+                interest_expense = abs(float(is_stmt.loc['Interest Expense Non Operating', is_date]))
+
+        # 3. SBC & FCF
+        sbc = 0.0
+        fcf_ttm = info.get("freeCashflow")
+        if cf_date:
+            # 嘗試提取 SBC
+            for key in ['Stock Based Compensation', 'Share Based Compensation', 'Issuance Of Stock']:
                 if key in cf.index:
-                    val = cf.loc[key, latest_cf_date]
-                    if val is not None:
-                        # SBC 在現金流量表 (CFO) 中通常是正數 (加回項)，我們需要正值來進行後續計算
-                        stock_based_compensation = abs(float(val))
+                    val = cf.loc[key, cf_date]
+                    if val is not None: sbc = abs(float(val))
                     break
-
-        if fcf_ttm is None: fcf_ttm = info.get("freeCashflow")
-
-        # --- 4. Risk (Robust Fetch) ---
-        risk_free_rate = 0.042 # Default fallback (4.2%)
-        try:
-            treasury = yf.Ticker("^TNX")
-            tnx_hist = treasury.history(period="5d")
-            if not tnx_hist.empty:
-                risk_free_rate = float(tnx_hist["Close"].iloc[-1]) / 100
-        except Exception as e:
-            print(f"⚠️ [Risk Tool] Failed to fetch ^TNX, using default {risk_free_rate:.1%}: {e}")
-
-        # --- 5. SGR Metrics ---
-        roe = info.get("returnOnEquity")
-        payout_ratio = info.get("payoutRatio")
         
-        if payout_ratio is None and roe and roe > 0:
-            payout_ratio = 0.0 
+        # 4. Risk Free Rate
+        rf = 0.042 # Default
+        try:
+            tnx = yf.Ticker("^TNX").history(period="5d")
+            if not tnx.empty: rf = float(tnx["Close"].iloc[-1]) / 100
+        except: pass
 
         return {
             "price": current_price,
             "market_cap": float(market_cap) if market_cap else 0.0,
             "shares_outstanding": float(shares) if shares else 0.0,
+            "sector": info.get("sector", "Unknown"),
+            "beta": info.get("beta", 1.0),
+            "pe_ratio": info.get("trailingPE"),
             "peg_ratio": info.get("pegRatio"),
-            "beta": info.get("beta"),
-            "trailing_pe": info.get("trailingPE"),
-            "forward_pe": info.get("forwardPE"),
-            "risk_free_rate": risk_free_rate,
-            "fcf_ttm": float(fcf_ttm) if fcf_ttm else 0.0,
+            "risk_free_rate": rf,
             "total_debt": total_debt,
-            "cash_and_equivalents": cash_and_equivalents,
-            "tangible_book_value": tangible_book_value,
-            "sector": sector,               
-            "industry": industry,           
-            "interest_coverage": interest_coverage,
-            "roe": roe,                     
-            "payout_ratio": payout_ratio,
-            "stock_based_compensation": stock_based_compensation # [New]
+            "cash_and_equivalents": cash_eq,
+            "ebit": ebit,
+            "interest_expense": interest_expense,
+            "sbc": sbc,
+            "fcf_ttm": float(fcf_ttm) if fcf_ttm else 0.0,
+            "roe": info.get("returnOnEquity"),
+            "payout_ratio": info.get("payoutRatio"),
+            "fcf_data_source": "yfinance_info" if fcf_ttm else "calculated"
         }
     except Exception as e:
-        print(f"❌ [Calculator Tool] yfinance error: {e}")
+        print(f"❌ [Data Fetcher] Error: {e}")
         return None
 
 def get_normalized_income_data(ticker: str) -> dict:
-    """從損益表中提取標準化淨利"""
     try:
         stock = yf.Ticker(ticker)
         fin_df = stock.financials
@@ -185,110 +114,56 @@ def get_normalized_income_data(ticker: str) -> dict:
             normalized_income = fin_df.loc['Net Income', latest_date]
         
         raw_net_income = fin_df.loc['Net Income', latest_date] if 'Net Income' in fin_df.index else normalized_income
-        return {"normalized_income": float(normalized_income), "raw_net_income": float(raw_net_income), "use_normalized": use_normalized}
+        
+        return {
+            "normalized_income": float(normalized_income), 
+            "use_normalized": use_normalized,
+            "raw_net_income": float(raw_net_income)
+        }
     except: return None
 
 def calculate_historical_growth(ticker: str) -> float:
-    """
-    計算 4 年 CAGR，強制優先使用 Normalized Income 以過濾一次性事件。
-    """
     try:
         stock = yf.Ticker(ticker)
         fin_df = stock.financials
-        
         if fin_df.empty or len(fin_df.columns) < 2: return None
         
         target_row = None
-        if 'Normalized Income' in fin_df.index:
-            target_row = 'Normalized Income'
-        elif 'Net Income Common Stockholders' in fin_df.index:
-            target_row = 'Net Income Common Stockholders'
-        elif 'Net Income' in fin_df.index:
-            target_row = 'Net Income'
-            
+        if 'Normalized Income' in fin_df.index: target_row = 'Normalized Income'
+        elif 'Net Income' in fin_df.index: target_row = 'Net Income'
         if not target_row: return None
             
         values = fin_df.loc[target_row].values[::-1]
         values = [v for v in values if v is not None and not np.isnan(v)]
-        
-        if len(values) < 4: return None
+        if len(values) < 4 or values[0] <= 0: return None
+        if values[-1] <= 0: return -0.05
             
-        start_val = values[0]
-        end_val = values[-1]
-        
-        if start_val <= 0: return None
-        if end_val <= 0: return -0.05 
-            
-        years = len(values) - 1
-        cagr = (end_val / start_val) ** (1 / years) - 1
-        
-        return float(cagr)
-    except Exception as e:
-        print(f"⚠️ [Growth Tool] Error: {e}")
-        return None
-
-def calculate_metrics(financials: dict, market_data: dict) -> dict:
-    """基礎比率計算"""
-    revenue_m = financials.get("total_revenue", 0)
-    net_income_m = financials.get("net_income", 0)
-    market_cap = market_data.get("market_cap", 0)
-    price = market_data.get("price", 0)
-    
-    margin = (net_income_m / revenue_m * 100) if revenue_m > 0 else 0
-    pe_ratio_fy = market_cap / (net_income_m * 1_000_000) if net_income_m > 0 else 0
-    pe_ratio_ttm = market_data.get("trailing_pe")
-    primary_pe = pe_ratio_ttm if pe_ratio_ttm else pe_ratio_fy
-    
-    trend_insight = "Stable"
-    if pe_ratio_ttm and pe_ratio_fy > 0:
-        diff = (pe_ratio_ttm - pe_ratio_fy) / pe_ratio_fy
-        if diff < -0.05: trend_insight = "Earnings Improving"
-        elif diff > 0.05: trend_insight = "Earnings Declining"
-    
-    status = "Fair Value"
-    if primary_pe > 0:
-        if primary_pe < 15: status = "Undervalued"
-        elif primary_pe > 35: status = "Overvalued"
-    
-    return {
-        "market_cap": market_cap / 1_000_000,
-        "current_price": price,
-        "net_profit_margin": round(margin, 2),
-        "pe_ratio": round(primary_pe, 2),
-        "pe_ratio_ttm": round(pe_ratio_ttm, 2) if pe_ratio_ttm else None,
-        "pe_ratio_fy": round(pe_ratio_fy, 2),
-        "pe_trend_insight": trend_insight,
-        "valuation_status": status
-    }
+        return float((values[-1] / values[0]) ** (1 / (len(values) - 1)) - 1)
+    except: return None
 
 def calculate_dcf(
     start_value: float,
     shares_outstanding: float,
-    total_debt: float,
-    cash_and_equivalents: float,
+    net_debt: float, # 改為直接傳入 Net Debt
     growth_rate: float,
     discount_rate: float,
-    terminal_growth: float = 0.025, 
+    terminal_growth: float = 0.025,
     projection_years: int = 10,
-    fade_start_year: int = 5,       
-    method: str = "FCF"
-) -> dict:
+    fade_start_year: int = 5,
+    exit_multiple: float = None, 
+    method: str = "FCF") -> dict:
     """
-    Enterprise Grade DCF:
-    1. Supports Linear Growth Decay (Fade).
-    2. Calculates TV Concentration (Risk Metric).
+    純數學引擎：只負責算 DCF，不負責決定參數。
     """
     if shares_outstanding == 0 or start_value is None:
-        return {"intrinsic_value": 0.0, "details": "Invalid Data"}
+        return {"intrinsic_value": 0.0}
     
-    # print(f"🧮 [DCF-{method}] Base:${start_value/1e9:.2f}B, Initial Growth:{growth_rate:.1%}, Discount:{discount_rate:.1%}")
-    
-    # 1. 預測現金流 (含 Fade 邏輯)
+    # 1. Cash Flow Projection with Fade
     future_flows = []
     current_val = start_value
     current_growth = growth_rate
-    
     decay_step = 0.0
+    
     if projection_years > fade_start_year:
         decay_step = (growth_rate - terminal_growth) / (projection_years - fade_start_year + 1)
 
@@ -297,52 +172,29 @@ def calculate_dcf(
             current_growth = max(terminal_growth, current_growth - decay_step)
         
         current_val = current_val * (1 + current_growth)
-        
-        discount_factor = (1 + discount_rate) ** year
-        pv = current_val / discount_factor
-        
-        future_flows.append({
-            "year": year,
-            "val": current_val,
-            "growth_used": current_growth,
-            "pv": pv
-        })
+        pv = current_val / ((1 + discount_rate) ** year)
+        future_flows.append({"val": current_val, "pv": pv})
     
     pv_explicit = sum(f["pv"] for f in future_flows)
     
-    # 2. 終值計算 (Terminal Value)
+    # 2. Terminal Value (目前僅 Gordon)
     last_val = future_flows[-1]["val"]
     
-    final_discount_rate = discount_rate
-    if final_discount_rate <= terminal_growth:
-        final_discount_rate = terminal_growth + 0.02
-        
-    terminal_value = (last_val * (1 + terminal_growth)) / (final_discount_rate - terminal_growth)
-    pv_terminal = terminal_value / ((1 + discount_rate) ** projection_years)
+    final_disc = max(discount_rate, terminal_growth + 0.01) # Math safety
+    tv_gordon = (last_val * (1 + terminal_growth)) / (final_disc - terminal_growth)
+    pv_terminal = tv_gordon / ((1 + discount_rate) ** projection_years)
     
-    # 3. 匯總
-    discounted_sum = pv_explicit + pv_terminal
+    # 3. Sum
+    enterprise_value = pv_explicit + pv_terminal
     
-    # 4. 根據方法處理債務
-    equity_value = 0.0
-    if "FCF" in method.upper(): # Supports "FCF (Cons)" and "FCF (Street)"
-        equity_value = discounted_sum - total_debt + cash_and_equivalents
-        note = "Adjusted for Net Debt"
-    else:
-        equity_value = discounted_sum 
-        note = "Direct Equity Value"
+    # 4. Equity Value
+    equity_value = enterprise_value - net_debt # Net Debt 可為正或負
+    intrinsic_value = max(0, equity_value / shares_outstanding)
     
-    intrinsic_value = max(0.0, equity_value / shares_outstanding)
+    tv_conc = pv_terminal / (pv_explicit + pv_terminal) if (pv_explicit + pv_terminal) > 0 else 0
     
-    tv_concentration = 0.0
-    if discounted_sum > 0:
-        tv_concentration = pv_terminal / discounted_sum
-        
     return {
         "intrinsic_value": round(intrinsic_value, 2),
-        "discounted_sum": discounted_sum,
-        "equity_value": equity_value,
-        "tv_concentration": round(tv_concentration, 2),
-        "method": method,
-        "note": note
+        "tv_concentration": round(tv_conc, 2),
+        "note": method
     }
