@@ -72,18 +72,10 @@ def calculator_node(state: AgentState) -> dict:
         
         print(f"✅ [Calculator] 策略執行完成。DCF: ${metrics_obj.dcf_value:.2f} (Upside: {metrics_obj.dcf_upside:.2f}%)")
         
-        # 4. 檢查異常並生成調查任務（保留原有邏輯）
-        investigation_tasks = []
-        
-        # 如果有標準化淨利差異，生成調查任務
-        if metrics_obj.is_normalized:
-            # 這裡我們需要獲取原始 GAAP 淨利來比較
-            # 為了保持簡單，我們暫時跳過這個檢查，因為 strategy 內部已經處理了
-            pass
-        
+        # 4. 返回結果
+        # 注意：異常檢測邏輯已移至 Reviewer 節點
         return {
             "valuation_metrics": metrics_obj,
-            "investigation_tasks": investigation_tasks,
             "error": None
         }
         
